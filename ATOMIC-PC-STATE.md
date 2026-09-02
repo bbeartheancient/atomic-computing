@@ -941,10 +941,7 @@ Pending todos at end of iter 22:
 2. Pick next goal. Roadmap S1-S10 are closed (iter 15); iter 16
    added retrieval (orthogonal). Iter 17-22 added UI/demos/polish.
    Candidate next goals (operator chooses):
-   - (A) **wgsl target hard-validate** — install `naga` CLI if absent;
-     pin byte-identical WGSL → engine parity on a small H4 patch;
-     run on the live GPU (vLLM owns GPU0 VRAM, so run a compute-only
-     naga validation pass at minimum).
+   - (A) ~~**wgsl target hard-validate**~~ — DONE iter 24: naga 30.0.1 installed, WGSL codegen rewritten to use module-scope @group(0) storage vars (Bus 4*n for H4, ParamsBus n), naga validates H4/extended/simple shaders.
    - (B) **bicameral live demo** — port `examples/gated_clock_counter`
      to two Engines (subconscious = `clock_bpm@60`, conscious =
      `accum -> smooth -> viz_series`) pipelined through `HostBridge`
