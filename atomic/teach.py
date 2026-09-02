@@ -45,12 +45,12 @@ __all__ = ["TeacherRegistry", "REGISTRY", "register_example",
 DOMAINS = ["general", "audio", "medical", "signal", "control", "spatial"]
 
 KEYWORDS_BY_DOMAIN = {
-    "general": {"counter": 2, "chart": 2, "clock": 2, "gain": 1, "smooth": 1},
-    "audio": {"audio": 3, "hadamard": 3, "h4": 3, "spatial": 2, "wxyz": 2, "mdct": 2, "flux": 2, "sensor": 1},
-    "medical": {"first": 1, "aid": 2, "medical": 3, "threshold": 2, "sensor": 1},
-    "signal": {"signal": 3, "filter": 2, "smooth": 2, "average": 2, "moving": 2, "threshold": 2, "gain": 1},
-    "control": {"clock": 2, "bpm": 2, "toggle": 2, "accum": 2, "trigger": 2},
-    "spatial": {"hadamard": 3, "h4": 3, "spatial": 3, "wxyz": 3, "3d": 2, "scope": 1},
+    "general": {"counter": 2, "chart": 2, "clock": 2, "gain": 1, "smooth": 1, "filter": 1, "accum": 1},
+    "audio": {"audio": 3, "hadamard": 3, "h4": 3, "spatial": 2, "wxyz": 2, "mdct": 2, "flux": 2, "sensor": 1, "spectrum": 2, "frequency": 2, "beat": 1, "rhythm": 2, "mix": 2, "pan": 1},
+    "medical": {"first": 1, "aid": 2, "medical": 3, "threshold": 2, "sensor": 1, "monitor": 2, "ecg": 2, "pulse": 2, "alarm": 2, "vital": 2, "heart": 2},
+    "signal": {"signal": 3, "filter": 2, "smooth": 2, "average": 2, "moving": 2, "threshold": 2, "gain": 1, "hysteresis": 2, "clamp": 2, "bias": 1, "accum": 1},
+    "control": {"clock": 2, "bpm": 2, "toggle": 2, "accum": 2, "trigger": 2, "gate": 1, "counter": 2, "divider": 2, "sequencer": 1, "tap": 1},
+    "spatial": {"hadamard": 3, "h4": 3, "spatial": 3, "wxyz": 3, "3d": 2, "scope": 1, "consensus": 2, "rotation": 2, "sylvester": 2, "axis": 1, "quadrature": 2, "amplitude": 1, "dominant": 2},
 }
 
 # primitive keyword -> program fragment hint
@@ -63,22 +63,33 @@ PRIMITIVE_KEYWORDS = {
     "average": ("moving_avg", {"n": 8}),
     "moving average": ("moving_avg", {"n": 8}),
     "threshold": ("threshold", {"hi": 0.5, "lo": -0.5}),
+    "hysteresis": ("threshold", {"hi": 0.5, "lo": -0.5}),
     "gain": ("gain", {"factor": 2.0}),
     "scale": ("gain", {"factor": 2.0}),
     "bias": ("bias", {"add": 1.0}),
+    "clamp": ("clamp", {"lo": -1.0, "hi": 1.0}),
     "hadamard": ("h4_slide", {}),
     "h4": ("h4_slide", {}),
     "wxyz": ("h4_slide", {}),
     "sine": ("sine_lfo", {"rate_hz": 1.0, "amp": 1.0}),
     "lfo": ("sine_lfo", {"rate_hz": 1.0}),
     "oscillator": ("sine_lfo", {"rate_hz": 1.0}),
+    "spectrum": ("mdct_flux", {}),
+    "mdct": ("mdct_flux", {}),
+    "flux": ("mdct_flux", {}),
     "toggle": ("toggle", {"initial": 0}),
+    "divider": ("toggle", {"initial": 0}),
+    "sequencer": ("clock_bpm", {"bpm": 120}),
+    "tap": ("tap", {}),
     "gate and": ("gate_and", {}),
     "gate or": ("gate_or", {}),
     "xor": ("gate_xor", {}),
     "chart": ("viz_series", {}),
     "scope": ("viz_xy", {}),
     "3d": ("viz_wxyz3d", {}),
+    "consensus": ("viz_series", {}),
+    "dominant": ("viz_series", {}),
+    "amplitude": ("viz_series", {}),
 }
 
 
@@ -339,7 +350,7 @@ REGISTRY = TeacherRegistry()
 def _seed():
     if REGISTRY.examples:
         return
-    # seed with three canonical examples mirroring the sibling's seed
+    # 14 canonical examples covering all 6 domains + CORE concepts
     p1 = Program("gated_clock_counter", description="A gated clock fires a counter; the count is smoothed before driving a chart.",
                  blocks=[Block("c1", "clock_bpm", {"bpm": 60}), Block("a1", "accum", {"per_tick": 1}), Block("s1", "smooth", {"alpha": 0.1}), Block("v1", "viz_series")],
                  wires=[Wire("c1.trig", "a1.in"), Wire("a1.acc", "s1.in"), Wire("s1.cv", "v1.in")])
@@ -349,14 +360,67 @@ def _seed():
     p3 = Program("threshold_gate_mixer", description="Two signals enter a hysteresis threshold; the output gates a third signal.",
                  blocks=[Block("s1", "sensor"), Block("th1", "threshold", {"hi": 0.5, "lo": -0.5}), Block("g1", "gain", {"factor": 1.0}), Block("v1", "viz_series")],
                  wires=[Wire("s1.cv", "th1.in"), Wire("th1.gate", "g1.in"), Wire("g1.cv", "v1.in")])
-    REGISTRY.register(p1.description, p1, domain="control")
-    REGISTRY.register(p2.description, p2, domain="spatial")
-    REGISTRY.register(p3.description, p3, domain="signal")
-    # extra domain example for medical
     p4 = Program("medical_threshold", description="A medical sensor threshold gates an alarm chart.",
                  blocks=[Block("sig", "sensor"), Block("th", "threshold", {"hi": 0.8, "lo": 0.2}), Block("v", "viz_series")],
                  wires=[Wire("sig.cv", "th.in"), Wire("th.gate", "v.in")])
+    # --- spatial domain (CORE H4 keystone) ---
+    p5 = Program("spatial_h4_consensus", description="A sensor drives H4 spatial gate; dominant W consensus axis drives a series chart.",
+                 blocks=[Block("sig", "sensor"), Block("h4", "h4_slide"), Block("v", "viz_series")],
+                 wires=[Wire("sig.cv", "h4.in"), Wire("h4.w", "v.in")])
+    p6 = Program("spatial_wxyz_rotation", description="H4 W/X/Y/Z outputs feed a 3D scope showing spatial rotation and dominant amplitude.",
+                 blocks=[Block("sig", "sensor"), Block("h4", "h4_slide"), Block("v", "viz_wxyz3d")],
+                 wires=[Wire("sig.cv", "h4.in"), Wire("h4.w", "v.w"), Wire("h4.x", "v.x"), Wire("h4.y", "v.y"), Wire("h4.z", "v.z")])
+    # --- medical domain (vital sign / alarm concepts) ---
+    p7 = Program("medical_vital_monitor", description="A medical sensor feeds a smooth filter then a threshold alarm chart.",
+                 blocks=[Block("sig", "sensor"), Block("sm", "smooth", {"alpha": 0.1}), Block("th", "threshold", {"hi": 0.7, "lo": 0.3}), Block("v", "viz_series")],
+                 wires=[Wire("sig.cv", "sm.in"), Wire("sm.cv", "th.in"), Wire("th.gate", "v.in")])
+    p8 = Program("medical_ecg_pulse_counter", description="ECG pulse sensor triggers threshold then accum counter on a chart.",
+                 blocks=[Block("sig", "sensor"), Block("th", "threshold", {"hi": 0.6, "lo": 0.2}), Block("acc", "accum", {"per_tick": 1}), Block("v", "viz_series")],
+                 wires=[Wire("sig.cv", "th.in"), Wire("th.gate", "acc.in"), Wire("acc.acc", "v.in")])
+    # --- audio domain (hadamard / mdct / spatial mix) ---
+    p9 = Program("audio_spectrum_flux", description="Audio sensor feeds MDCT flux detector driving a series chart.",
+                 blocks=[Block("sig", "sensor"), Block("fl", "mdct_flux", {}), Block("v", "viz_series")],
+                 wires=[Wire("sig.cv", "fl.in"), Wire("fl.flux", "v.in")])
+    p10 = Program("audio_spatial_mix", description="Two audio sensors mix through H4 spatial gate; W dominant consensus drives the chart.",
+                  blocks=[Block("s1", "sensor"), Block("s2", "sensor"), Block("h4", "h4_slide"), Block("v", "viz_series")],
+                  wires=[Wire("s1.cv", "h4.in"), Wire("s2.cv", "h4.in"), Wire("h4.w", "v.in")])
+    # --- signal domain (filter / smooth / hysteresis) ---
+    p11 = Program("signal_moving_average_filter", description="Signal sensor feeds a moving average filter; threshold gates a chart.",
+                  blocks=[Block("sig", "sensor"), Block("ma", "moving_avg", {"n": 8}), Block("th", "threshold", {"hi": 0.5, "lo": -0.5}), Block("v", "viz_series")],
+                  wires=[Wire("sig.cv", "ma.in"), Wire("ma.cv", "th.in"), Wire("th.gate", "v.in")])
+    p12 = Program("signal_hysteresis_filter", description="Signal passes through a gain then a hysteresis threshold; clamped output goes to chart.",
+                  blocks=[Block("sig", "sensor"), Block("g", "gain", {"factor": 2.0}), Block("cl", "clamp", {"lo": -1.0, "hi": 1.0}), Block("v", "viz_series")],
+                  wires=[Wire("sig.cv", "g.in"), Wire("g.cv", "cl.in"), Wire("cl.cv", "v.in")])
+    # --- control domain (clock / toggle / divider / sequencer) ---
+    p13 = Program("control_clock_divider", description="A clock divider fires a toggle on every other beat; the toggle state drives a chart.",
+                  blocks=[Block("clk", "clock_bpm", {"bpm": 120}), Block("tg", "toggle", {"initial": 0}), Block("v", "viz_series")],
+                  wires=[Wire("clk.trig", "tg.trig"), Wire("tg.state", "v.in")])
+    p14 = Program("control_bpm_accumulator", description="A fast BPM clock accumulates pulses; the count feeds a smoothed chart.",
+                  blocks=[Block("clk", "clock_bpm", {"bpm": 240}), Block("acc", "accum", {"per_tick": 1}), Block("sm", "smooth", {"alpha": 0.05}), Block("v", "viz_series")],
+                  wires=[Wire("clk.trig", "acc.in"), Wire("acc.acc", "sm.in"), Wire("sm.cv", "v.in")])
+    # --- general domain (cross-domain concepts) ---
+    p15 = Program("general_counter_chart", description="A counter accumulates and drives a chart.",
+                  blocks=[Block("acc", "accum", {"per_tick": 1}), Block("v", "viz_series")],
+                  wires=[Wire("acc.acc", "v.in")])
+    p16 = Program("general_gain_scope", description="A gain block scales a constant value and drives a scope.",
+                  blocks=[Block("c0", "const", {"value": 2.0}), Block("g", "gain", {"factor": 3.0}), Block("v", "viz_series")],
+                  wires=[Wire("c0.cv", "g.in"), Wire("g.cv", "v.in")])
+    REGISTRY.register(p1.description, p1, domain="control")
+    REGISTRY.register(p2.description, p2, domain="spatial")
+    REGISTRY.register(p3.description, p3, domain="signal")
     REGISTRY.register(p4.description, p4, domain="medical")
+    REGISTRY.register(p5.description, p5, domain="spatial")
+    REGISTRY.register(p6.description, p6, domain="spatial")
+    REGISTRY.register(p7.description, p7, domain="medical")
+    REGISTRY.register(p8.description, p8, domain="medical")
+    REGISTRY.register(p9.description, p9, domain="audio")
+    REGISTRY.register(p10.description, p10, domain="audio")
+    REGISTRY.register(p11.description, p11, domain="signal")
+    REGISTRY.register(p12.description, p12, domain="signal")
+    REGISTRY.register(p13.description, p13, domain="control")
+    REGISTRY.register(p14.description, p14, domain="control")
+    REGISTRY.register(p15.description, p15, domain="general")
+    REGISTRY.register(p16.description, p16, domain="general")
 
 
 _seed()

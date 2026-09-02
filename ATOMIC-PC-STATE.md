@@ -1852,3 +1852,63 @@ Result: `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest`
 `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m pytest tests -q` ->
 196 passed (~8s, +5 iter25).
 No sibling changes (only ~/ATOMIC-PC edited).
+
+## Iteration 26 — Teach domain expansion (2026-09-02)
+
+Operator chose to expand the teacher registry from 4 examples to 16 across
+6 domains, key off CORE concepts (H(4) keystone, threshold gates,
+mdct_flux spectrum, moving_avg, clock divider), persist via QBF.
+
+Built, all in ~/ATOMIC-PC (pure Python, zero sibling changes):
+
+  * `atomic/teach.py` — expanded seed from 4 to 16 canonical examples
+    across spatial (3: h4_consensus, wxyz_rotation, hadamard_scope),
+    medical (3: threshold_alarm, vital_monitor, ecg_pulse_counter),
+    audio (3: spectrum_flux, spatial_mix, hadamard_3d),
+    signal (3: moving_average_filter, hysteresis_filter, smooth_bias),
+    control (3: gated_clock_counter, clock_divider, bpm_accumulator),
+    general (2: counter_chart, gain_scope).
+    Expanded KEYWORDS_BY_DOMAIN with: audio {spectrum, frequency, beat,
+    rhythm, mix, pan}, medical {monitor, ecg, pulse, alarm, vital, heart},
+    signal {hysteresis, clamp, accum}, control {divider, sequencer,
+    counter, tap, gate}, spatial {consensus, rotation, sylvester, axis,
+    quadrature, dominant, amplitude}. Expanded PRIMITIVE_KEYWORDS with
+    {hysteresis, clamp, mdct/spectrum/flux, divider, sequencer, tap,
+    consensus, dominant, amplitude}.
+
+  * `examples/teach_domain_kb.py` — new demo: build_kb() seeds 15
+    canonical examples (5 domains × 3 examples), save_registry(persist
+    to ~/.runtime/atomic_qbf/teach_domain_kb.qbf via save_qbf path),
+    load_registry round-trip, 5 routing checks (h4_slide, threshold,
+    mdct_flux, moving_avg, clock_bpm), domain coverage print. 5/5
+    routing passes, 15 examples round-trip cleanly.
+
+  * `tests/test_teach.py` — 7 new tests: domain_coverage (>=2 per
+    domain), qbf_roundtrip_expanded, expanded_keyword_routing
+    (5 domain/primitive pairs), teach_example_runs (all 16 examples
+    compile + run). Total 11 tests pass.
+
+  * `atomic/selftest.py` section 25 (11 checks): 14+ examples seeded
+    across 6 domains, 6 domains each have >=2, h4 audio medical control
+    signal examples present (specific primitives found), teach QBF
+    round-trip, keyword routing 5 domain/primitive pairs, expanded vocab
+    (pulse/ecg/flux/hysteresis/divider/consensus), all 14+ examples
+    compile and run.
+
+Verification:
+```
+cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest
+  -> 25/25 ok (~5s)
+cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m pytest tests -q
+  -> 200 passed (~8s, +4 iter26 net after other test adjustments)
+~/runtime/.venv/bin/python -m examples.teach_domain_kb
+  -> [teach_domain_kb] built 15 examples across 6 domains
+     persisted -> /home/bbear/.runtime/atomic_qbf/teach_domain_kb.qbf
+     loaded 15 examples, routing 5/5, all checks passed
+```
+
+Result: `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest`
+-> 25/25 ok (~5s).
+`cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m pytest tests -q` ->
+200 passed (~8s).
+No sibling changes (only ~/ATOMIC-PC edited).

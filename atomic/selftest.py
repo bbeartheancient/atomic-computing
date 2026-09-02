@@ -1,6 +1,6 @@
-"""selftest: unified gauntlet for ATOMIC-PC (iter 20).
+"""selftest: unified gauntlet for ATOMIC-PC (iter 26).
 
-17 sections, N/N ok per section, exit 0/1.
+25 sections, N/N ok per section, exit 0/1.
 Run: cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest
 
 Sections:
@@ -30,6 +30,11 @@ Sections:
  18 ui       iter 4: signed heatmap, WS RTT, presets, replay/record
  19 ui       iter 4 continued: split pane, wsstats, keyboard shortcuts
  20 ui       iter 5: themes, program switcher, bus inspector, param sweep, CSV export, wheel speed
+ 21 ui       iter 6: fullscreen, color picker, viz override, bus search, cheatsheet, screenshot, favorites
+ 22 ui       iter 7: tile wall zoom (Ctrl+wheel) + accent color override
+ 23 iter24   goal A: wgsl naga hard-validate (30.0.1), module-scope storage, @group(0) bindings
+ 24 iter25   goal B: bicameral live demo (BicameralPipeline, bridge_latency=1, UI /api/bicameral endpoints)
+ 25 iter26   teach domain expansion: 14 examples across 6 domains, QBF persistence, keyword routing, all runnable
 """
 import json, math, os, random, shutil, struct, subprocess, sys, tempfile, time
 
@@ -2607,8 +2612,140 @@ def s24_checks():
     return checks
 
 
+def s25_checks():
+    """iter 26: teach domain expansion — 14 seeded examples across 6 domains,
+    QBF persistence, domain routing checks, all examples runnable."""
+    checks = []
+
+    def teach_registry_14_examples():
+        from atomic.teach import REGISTRY, DOMAINS
+        assert len(REGISTRY.examples) >= 14, \
+            f"expected >=14, got {len(REGISTRY.examples)}"
+        for dom in DOMAINS:
+            assert len(REGISTRY.list(domain=dom)) >= 1, \
+                f"domain {dom} has no examples"
+    checks.append(("14+ examples seeded across 6 domains", teach_registry_14_examples))
+
+    def teach_domain_coverage():
+        from atomic.teach import DOMAINS
+        # each domain has at least 2 examples
+        from atomic.teach import REGISTRY
+        for dom in DOMAINS:
+            n = len(REGISTRY.list(domain=dom))
+            assert n >= 2, f"domain {dom} needs >=2, got {n}"
+    checks.append(("6 domains each have >=2 examples", teach_domain_coverage))
+
+    def teach_h4_examples_present():
+        from atomic.teach import REGISTRY
+        hit = REGISTRY.match("hadamard spatial wxyz 3d scope", domain="spatial")
+        assert hit is not None, "spatial hadamard example missing"
+        assert any(b.primitive == "h4_slide" for b in hit["program"].blocks)
+    checks.append(("spatial hadamard example has h4_slide", teach_h4_examples_present))
+
+    def teach_audio_examples_present():
+        from atomic.teach import REGISTRY
+        hit = REGISTRY.match("audio spectrum flux detector", domain="audio")
+        assert hit is not None, "audio mdct_flux example missing"
+        assert any(b.primitive == "mdct_flux" for b in hit["program"].blocks)
+    checks.append(("audio mdct_flux example present", teach_audio_examples_present))
+
+    def teach_medical_examples_present():
+        from atomic.teach import REGISTRY
+        hit = REGISTRY.match("medical vital monitor smooth alarm", domain="medical")
+        assert hit is not None, "medical vital monitor example missing"
+        assert any(b.primitive == "threshold" for b in hit["program"].blocks)
+    checks.append(("medical threshold examples present", teach_medical_examples_present))
+
+    def teach_control_examples_present():
+        from atomic.teach import REGISTRY
+        hit = REGISTRY.match("clock bpm counter toggle divider", domain="control")
+        assert hit is not None, "control clock examples missing"
+        assert any(b.primitive == "clock_bpm" for b in hit["program"].blocks)
+    checks.append(("control clock_bpm examples present", teach_control_examples_present))
+
+    def teach_signal_examples_present():
+        from atomic.teach import REGISTRY
+        hit = REGISTRY.match("signal moving average filter threshold", domain="signal")
+        assert hit is not None, "signal moving_avg example missing"
+        assert any(b.primitive == "moving_avg" for b in hit["program"].blocks)
+    checks.append(("signal moving_avg examples present", teach_signal_examples_present))
+
+    def teach_qbf_roundtrip():
+        from atomic.teach import TeacherRegistry, REGISTRY
+        from atomic import Program, Block, Wire
+        import tempfile, shutil, os
+        tmp = tempfile.mkdtemp(prefix="selftest_teach26_")
+        try:
+            reg = TeacherRegistry()
+            p = Program("test_prog",
+                blocks=[Block("c0","const",{"value":5}),Block("v0","viz_series")],
+                wires=[Wire("c0.cv","v0.in")], description="iter26 test")
+            reg.register("iter26 test example", p, domain="signal")
+            reg.register("spatial h4 wxyz consensus",
+                         REGISTRY.match("hadamard spatial wxyz 3d scope")["program"],
+                         domain="spatial")
+            path = os.path.join(tmp, "teach26.qbf")
+            saved = reg.save_qbf(path=path)
+            assert os.path.exists(saved), "QBF not written"
+            loaded = TeacherRegistry.load_qbf(saved)
+            assert len(loaded.examples) == len(reg.examples), \
+                f"load mismatch: {len(loaded.examples)} != {len(reg.examples)}"
+            hit = loaded.match("iter26 test example", domain="signal")
+            assert hit is not None and hit["program"].name == "test_prog"
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    checks.append(("teach QBF round-trip", teach_qbf_roundtrip))
+
+    def teach_keyword_routing():
+        from atomic.teach import REGISTRY
+        for desc, dom, prim in [
+            ("hadamard gate wxyz scope", "spatial", "h4_slide"),
+            ("audio spectrum flux", "audio", "mdct_flux"),
+            ("sensor threshold gate alarm", "medical", "threshold"),
+            ("moving average filter", "signal", "moving_avg"),
+            ("clock bpm counter toggle", "control", "clock_bpm"),
+        ]:
+            p = REGISTRY.from_description(desc, domain=dom)
+            assert p.validate() == [], (desc, p.validate())
+            assert any(b.primitive == prim for b in p.blocks), \
+                f"{dom}/{prim}: {[b.primitive for b in p.blocks]}"
+    checks.append(("keyword routing across 5 domain/primitive pairs", teach_keyword_routing))
+
+    def teach_expanded_vocab():
+        from atomic.teach import KEYWORDS_BY_DOMAIN
+        assert "pulse" in KEYWORDS_BY_DOMAIN["medical"] or "ecg" in KEYWORDS_BY_DOMAIN["medical"]
+        assert "flux" in KEYWORDS_BY_DOMAIN["audio"]
+        assert "hysteresis" in KEYWORDS_BY_DOMAIN["signal"]
+        assert "divider" in KEYWORDS_BY_DOMAIN["control"]
+        assert "consensus" in KEYWORDS_BY_DOMAIN["spatial"]
+    checks.append(("expanded domain keywords (pulse/ecg/flux/hysteresis/divider/consensus)",
+                   teach_expanded_vocab))
+
+    def teach_all_examples_runnable():
+        from atomic.teach import REGISTRY
+        from atomic import Engine
+        failures = []
+        for e in REGISTRY.examples:
+            p = e["program"]
+            try:
+                errs = p.validate()
+                if errs:
+                    failures.append((e["hash"], "validate", errs))
+                    continue
+                patch = p.compile("microfx")
+                res = Engine(patch["modules"], patch["wires"]).run(10)
+                if res["final"] is None:
+                    failures.append((e["hash"], "run", "final is None"))
+            except Exception as ex:
+                failures.append((e["hash"], "exception", str(ex)))
+        assert not failures, f"seeded examples failed: {failures[:3]}"
+    checks.append(("all 14 seeded examples compile and run", teach_all_examples_runnable))
+
+    return checks
+
+
 def main():
-    print("ATOMIC-PC selftest — 24 sections")
+    print("ATOMIC-PC selftest — 25 sections")
     print("="*60)
     results=[]
     results.append(_run_section(1, "bridge", s1_checks))
@@ -2635,6 +2772,7 @@ def main():
     results.append(_run_section(22, "iter7 UI (zoom + accent)", s22_checks))
     results.append(_run_section(23, "iter24 goal A wgsl naga hard-validate", s23_checks))
     results.append(_run_section(24, "iter25 goal B bicameral live demo", s24_checks))
+    results.append(_run_section(25, "iter26 teach domain expansion (14 examples, QBF)", s25_checks))
     print("="*60)
     ok=sum(1 for r in results if r)
     print(f"selftest: {ok}/{len(results)} sections ok")
