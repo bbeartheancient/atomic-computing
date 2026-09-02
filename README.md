@@ -6,7 +6,7 @@ This dir is the project root and concept home: `ATOMIC-PC-CORE.md` is the single
 
 ## Harness
 
-Pure-Python twin of the fabric `jsfx/evaluatePatch` runtime, 16 sections green.
+Pure-Python twin of the fabric `jsfx/evaluatePatch` runtime, 22 sections green.
 
 ```
 atomic/
@@ -20,17 +20,25 @@ atomic/
   trace.py      flow observer (per-tick stimulus + per-node in/out/latency rings, snapshot/export, replay, latency_histogram_from_trace)
   qbf.py qbfstore.py  Quantum Blob Format + portable trace archive (no 50 MB cap, H4 optional)
   swarm.py decompose.py teach.py evolve.py bridge.py demo.py context.py
-tests/          pytest suite mirroring the gauntlet (170 tests)
-atomic/selftest.py  gauntlet (16 sections, ~120 checks, ~5s)
+  ui/           FastAPI tile wall (port 18094, HTML5 canvas, WebSocket streaming, zoom, accent picker, presets, record/replay, split view)
+  ui/static/index.html  4x4 canvas tile wall + heatmap/series/xy/wxyz3d renderers
+tests/          pytest suite mirroring the gauntlet (185 tests)
+atomic/selftest.py  gauntlet (22 sections, ~180 checks, ~5s)
+examples/       5 end-to-end live demos (QBF, H4, clock counter, swarm evolve teach, heatmap)
 ```
 
 ## Verify
 
 Run from repo root (vendored `fabric/` + `hoa64/` — no external sibling required):
 
-- ATOMIC-PC harness (170 tests): `python -m pytest tests -q`
+- ATOMIC-PC harness (185 tests): `python -m pytest tests -q`
   (oracle MODE 1+2 spawn `node`)
-- ATOMIC-PC gauntlet (16 sections, ~120 checks, ~5s): `python -m atomic.selftest`
+- ATOMIC-PC gauntlet (22 sections, ~180 checks, ~5s): `python -m atomic.selftest`
+- Live demos (5): `python -m examples.qbf_persistence_round_trip`,
+  `python -m examples.hadamard_wxyz_scope`, `python -m examples.gated_clock_counter`,
+  `python -m examples.swarm_evolve_teach_demo`, `python -m examples.heatmap_animation`
+- UI tile wall: `uvicorn atomic.ui:app --port 18094 --host 0.0.0.0` then
+  `http://localhost:18094/run/hadamard_wxyz` (any of 7 demo programs)
 - Retrieval (zvec-grep): `zg --version` (0.2.1), `zg status .` (ready, local/potion-code-16m-v2, 42/42),
   `zg query "H4 gate row layout" --human` hybrid FTS+vector; MCP via `zg install --target opencode --yes` + `zvec_grep_search`
 
@@ -49,6 +57,7 @@ Verify the vendored harness:
 - **WGSL**: `Program.to_wgsl()` emits `@compute @workgroup_size(64) @group(0) bus/params/state/bridge` with per-block `fn tick_<id>` and host-RAM bridge comment; validated by `Display.validate_wgsl()` (structural + `naga` if present).
 - **Tiles**: 3×3 or 4×4 wall, `Display.heatmap_from_trace()` / `heatmap_from_swarm()` / `heatmap_animation()` render replay onto tiles normalized 0..1.
 - **Retrieval**: `zg` 0.2.1 + `local/potion-code-16m-v2` index (`.zvec-grep/index.zvec`, 40 files / 500 entities) via `atomic/context.py` (`query`/`query_rg`/`assert_retrieval`) — stays green when zg absent, MCP `zvec_grep_search`/`_rg` same store.
+- **UI**: `atomic.ui:app` FastAPI tile wall (port 18094, lifespan auto-registers 7 demo programs) + `ProgramViewer` (batch + per-tick `tick_once` + WebSocket queue broadcast + live tap/param feed apply). REST: `/api/programs`, `/api/control/<p>`, `/api/views/<p>`, `/api/snapshot/<p>`, `/api/tap/<p>`, `/api/feed/<p>`, `/api/batch/<p>`, `/api/stream/<p>`, `/api/record/<p>`, `/api/replay/<p>`; WS: `/ws/<p>` (per-tick snapshot stream + tap/param/feed/batch client msgs + ping/pong RTT + `_lat_eng`/`_lat_ws`). UI features: tile rename (dblclick), preset save/load (localStorage), record/replay (.qbf shard under `~/.runtime/atomic_qbf/ui_records/`), split view (pane 2 with own WS), signed heatmap (intensity + sign), Ctrl+scroll/+/−/0 zoom, accent color picker (overrides theme `--accent`).
 
 ## Sibling imports
 
@@ -69,3 +78,14 @@ Vendored: `fabric/` (2.0 MB, jsfx + microfx) and `hoa64/` (8.8 MB, Hadamard) are
 - Index `zg index ~/ATOMIC-PC --embedding local/potion-code-16m-v2` → `ATOMIC-PC/.zvec-grep/index.zvec` (40/40 files, 500 entities, 256-dim cosine, no remote).
 - Queries pinned via CLI + MCP and wrapper `atomic/context.py`: H4→CORE, tiles→tiles.py, QBF→qbf (limit 7, hybrid FTS+vector), `zg query --rg h4_gate` exact; harness skips cleanly when zg absent.
 - Gauntlet + pytest green (only `~/ATOMIC-PC` edited).
+
+## Iterations 17–22 — UI tile wall, live demos, polish
+
+- Iter 17: planning/hardening — scope review, retrieval re-verification, git plan (closed).
+- Iter 18: 5 live demos under `examples/` (QBF round-trip, H4 scope, gated clock counter, swarm→evolve→teach, heatmap animation). Selftest grew to 18 sections.
+- Iter 19: `atomic/ui/` FastAPI tile wall (port 18094) + 7 demo programs + 4x4 canvas HTML5 renderer + WebSocket streaming. `tests/test_ui.py` (15 tests). Selftest 17 sections.
+- Iter 20 (UI iter 4): keyboard shortcuts (space/r/+/-/g), tile rename, presets, record/replay (.qbf shards), split view, signed heatmap, RTT ping/pong, latency overlay. Selftest 19 sections, 175 checks.
+- Iter 21 (UI iter 7): Ctrl+scroll/+/−/0 zoom + accent color picker (theme override via `--accent-override`).
+- Iter 22: release prep — git history polished, UI/index.html (2543 lines) committed, harness still 185/185 + 22/22 selftest green.
+
+Final state: 185 tests, 22-section gauntlet, vendored fabric/ + hoa64/, in-repo UI tile wall, live demos, retrieval layer.

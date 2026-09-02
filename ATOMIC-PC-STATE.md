@@ -1665,4 +1665,26 @@ Docs updates:
   - `atomic/selftest.py`: added s22_checks() + 10 checks; print → "22 sections".
   - `ATOMIC-PC-STATE.md`: this section.
 
-## Next iteration — iter 22: Release prep (git init + first commit + docs coherence)
+## Iteration 22 — Release prep (2026-09-02)
+
+Git repo already initialized (iter 17). Commits on main: e9cf4f1 (iter 1-17), fb0bd06 (vendor fabric+hoa64), adf6ca3 (scrub local paths). Iter 18-21 changes were unstaged — this iteration stages and commits them.
+
+Built, all in ~/ATOMIC-PC (pure Python, zero sibling changes):
+
+  * Staged and committed (dc24d05): 22 files, 5534 insertions:
+    - `atomic/ui/` — FastAPI tile wall (port 18094) + 7 demo programs + viewer + qbf_records + static/index.html (2543 lines)
+    - `examples/` — 5 live end-to-end demos
+    - `tests/test_ui.py` — 15 UI tests
+    - Modified: `atomic/{decompose,engine,gates,program}.py`, `atomic/selftest.py`, `AGENTS.md`, `ATOMIC-PC-STATE.md`
+    - New: `fabric/data/microapps/app_microfx_gate_probe.json` (miniapp fixture)
+
+  * `.gitignore` updated: added `*.db` and `*.db-journal` (fabric runtime SQLite artifact, 8 pages, not a fixture) — prevents runtime DBs from entering the repo.
+
+  * README.md refreshed: 16->22 sections, 170->185 tests, added UI tile wall entry, examples listing, iter 17-22 summary.
+
+  * `ATOMIC-PC-STATE.md`: this section appended.
+
+Result: `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest` -> 22/22 ok.
+`cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m pytest tests -q` -> 185 passed.
+Git commit dc24d05 on main, remote origin `https://github.com/bbeartheancient/atomic-computing.git` set.
+No sibling changes (only ~/ATOMIC-PC edited).
