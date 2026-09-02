@@ -959,6 +959,13 @@ Pending todos at end of iter 22:
    - (E) **decompose for EEL2** — extend `decompose_eel2` to handle
      full patches, not just expressions; round-trip via fabric
      `validate_patch` (currently only expressions decompose).
+   - (F) **ADD FUNCTION: video generation** — queue only, per
+     `AGENTS.md` Development Tasks section. H3 FastVideo T2VA on GPU1
+     (Qwen 27B on GPU0 = real bicameral pipeline), infinite-livestream
+     style continuous generation, frames as `List[bytes]` per tick fed
+     into a `viz_video` sink on the tile wall, trace captured via QBF.
+     Jellyfin + HDHomeRun/M3U as the live channel export layer.
+     Do NOT pre-build; the task is queued for operator approval.
 3. Update AGENTS.md `Next iteration` section after the goal is picked.
 
 Result: `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest`
