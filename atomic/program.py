@@ -392,106 +392,111 @@ class Program:
         Sizes are derived from len(blocks); the shader is valid WGSL
         (naga --check) and runnable via wgpu/XPUGraph on the live card.
         """
-        # map primitive -> WGSL tick body
+        # map primitive -> WGSL tick body (module-scope @group(0) storage)
         def _wgsl_body(block, atom):
             prim = atom.name if atom else block.primitive
             # minimal per-primitive bodies that mirror the Python impls
             if prim == "const":
                 v = block.params.get("value", 1.0)
-                return "  (*bus).data[%d] = %sf;" % (idx, repr(float(v)))
+                return "  bus.data[%d] = %sf;" % (idx, repr(float(v)))
             if prim == "gain":
                 f = float(block.params.get("factor", 1.0))
-                return "  (*bus).data[%d] = inputs[%d] * %sf;" % (idx, idx, repr(f))
+                return "  bus.data[%d] = inputs.data[%d] * %sf;" % (idx, idx, repr(f))
             if prim == "bias":
                 a = float(block.params.get("add", 0.0))
-                return "  (*bus).data[%d] = inputs[%d] + %sf;" % (idx, idx, repr(a))
+                return "  bus.data[%d] = inputs.data[%d] + %sf;" % (idx, idx, repr(a))
             if prim == "smooth":
                 al = float(block.params.get("alpha", 0.1))
-                return ("  (*state).data[%d] = (*state).data[%d] + %sf * (inputs[%d] - (*state).data[%d]);\n"
-                        "  (*bus).data[%d] = (*state).data[%d];") % (idx, idx, repr(al), idx, idx, idx, idx)
+                return ("  state.data[%d] = state.data[%d] + %sf * (inputs.data[%d] - state.data[%d]);\n"
+                        "  bus.data[%d] = state.data[%d];") % (idx, idx, repr(al), idx, idx, idx, idx)
             if prim == "threshold":
                 hi = float(block.params.get("hi", 0.5))
                 lo = float(block.params.get("lo", -0.5))
-                return ("  if (inputs[%d] > %sf) { (*state).data[%d] = 1.0; } else if (inputs[%d] < %sf) { (*state).data[%d] = 0.0; }\n"
-                        "  (*bus).data[%d] = (*state).data[%d];") % (idx, repr(hi), idx, idx, repr(lo), idx, idx, idx)
+                return ("  if (inputs.data[%d] > %sf) { state.data[%d] = 1.0; } else if (inputs.data[%d] < %sf) { state.data[%d] = 0.0; }\n"
+                        "  bus.data[%d] = state.data[%d];") % (idx, repr(hi), idx, idx, repr(lo), idx, idx, idx)
             if prim == "clamp":
                 lo = float(block.params.get("lo", -1.0))
                 hi = float(block.params.get("hi", 1.0))
-                return "  (*bus).data[%d] = clamp(inputs[%d], %sf, %sf);" % (idx, idx, repr(lo), repr(hi))
+                return "  bus.data[%d] = clamp(inputs.data[%d], %sf, %sf);" % (idx, idx, repr(lo), repr(hi))
             if prim == "sine_lfo":
                 amp = float(block.params.get("amp", 1.0))
                 off = float(block.params.get("offset", 0.0))
                 rh = float(block.params.get("rate_hz", 1.0))
                 # phase in state[idx], dt = 1/30
-                return ("  (*state).data[%d] = (*state).data[%d] + %sf * 0.0333333;\n"
-                        "  (*bus).data[%d] = %sf + %sf * sin((*state).data[%d] * 6.2831853);") % (idx, idx, repr(rh), idx, repr(off), repr(amp), idx)
+                return ("  state.data[%d] = state.data[%d] + %sf * 0.0333333;\n"
+                        "  bus.data[%d] = %sf + %sf * sin(state.data[%d] * 6.2831853);") % (idx, idx, repr(rh), idx, repr(off), repr(amp), idx)
             if prim == "moving_avg":
-                return "  (*bus).data[%d] = inputs[%d]; // moving_avg (host running mean)" % (idx, idx)
+                return "  bus.data[%d] = inputs.data[%d]; // moving_avg (host running mean)" % (idx, idx)
             if prim == "toggle":
-                return ("  if (inputs[%d] > 0.0 && (*state).data[%d] == 0.0) { (*state).data[%d+1] = 1.0 - (*state).data[%d+1]; }\n"
-                        "  (*state).data[%d] = select(0.0, 1.0, inputs[%d] > 0.0);\n"
-                        "  (*bus).data[%d] = (*state).data[%d+1];") % (idx, idx, idx, idx, idx, idx, idx, idx)
+                return ("  if (inputs.data[%d] > 0.0 && state.data[%d] == 0.0) { state.data[%d+1] = 1.0 - state.data[%d+1]; }\n"
+                        "  state.data[%d] = select(0.0, 1.0, inputs.data[%d] > 0.0);\n"
+                        "  bus.data[%d] = state.data[%d+1];") % (idx, idx, idx, idx, idx, idx, idx, idx)
             if prim == "clock_bpm":
                 bpm = float(block.params.get("bpm", 60.0))
                 period = 60.0 / max(0.1, bpm)
-                return ("  (*state).data[%d] = (*state).data[%d] + 0.0333333;\n"
-                        "  if ((*state).data[%d] >= %sf) { (*state).data[%d] = (*state).data[%d] - %sf; (*bus).data[%d] = 1.0; } else { (*bus).data[%d] = 0.0; }") % (idx, idx, idx, repr(period), idx, idx, repr(period), idx, idx)
+                return ("  state.data[%d] = state.data[%d] + 0.0333333;\n"
+                        "  if (state.data[%d] >= %sf) { state.data[%d] = state.data[%d] - %sf; bus.data[%d] = 1.0; } else { bus.data[%d] = 0.0; }") % (idx, idx, idx, repr(period), idx, idx, repr(period), idx, idx)
             if prim == "sensor":
-                return "  (*bus).data[%d] = inputs[%d]; // sensor (host-fed)" % (idx, idx)
+                return "  bus.data[%d] = inputs.data[%d]; // sensor (host-fed)" % (idx, idx)
             if prim in ("gate_and", "and"):
-                return ("  (*bus).data[%d] = select(0.0, 1.0, inputs[%d] > 0.5 && inputs[%d] > 0.5);" % (idx, idx, idx))
+                return ("  bus.data[%d] = select(0.0, 1.0, inputs.data[%d] > 0.5 && inputs.data[%d] > 0.5);" % (idx, idx, idx))
             if prim in ("gate_or", "or"):
-                return ("  (*bus).data[%d] = select(0.0, 1.0, inputs[%d] > 0.5 || inputs[%d] > 0.5);" % (idx, idx, idx))
+                return ("  bus.data[%d] = select(0.0, 1.0, inputs.data[%d] > 0.5 || inputs.data[%d] > 0.5);" % (idx, idx, idx))
             if prim in ("gate_not", "not"):
-                return "  (*bus).data[%d] = select(1.0, 0.0, inputs[%d] > 0.5);" % (idx, idx)
+                return "  bus.data[%d] = select(1.0, 0.0, inputs.data[%d] > 0.5);" % (idx, idx)
             if prim in ("gate_nand", "nand"):
-                return "  (*bus).data[%d] = select(1.0, 0.0, inputs[%d] > 0.5 && inputs[%d] > 0.5);" % (idx, idx, idx)
+                return ("  bus.data[%d] = select(1.0, 0.0, inputs.data[%d] > 0.5 && inputs.data[%d] > 0.5);" % (idx, idx, idx))
             if prim in ("gate_nor", "nor"):
-                return "  (*bus).data[%d] = select(1.0, 0.0, inputs[%d] > 0.5 || inputs[%d] > 0.5);" % (idx, idx, idx)
+                return ("  bus.data[%d] = select(1.0, 0.0, inputs.data[%d] > 0.5 || inputs.data[%d] > 0.5);" % (idx, idx, idx))
             if prim in ("gate_xor", "xor"):
-                return "  (*bus).data[%d] = select(0.0, 1.0, (inputs[%d] > 0.5) != (inputs[%d] > 0.5));" % (idx, idx, idx)
+                return ("  bus.data[%d] = select(0.0, 1.0, (inputs.data[%d] > 0.5) != (inputs.data[%d] > 0.5));" % (idx, idx, idx))
             if prim in ("gate_xnor", "xnor"):
-                return "  (*bus).data[%d] = select(0.0, 1.0, (inputs[%d] > 0.5) == (inputs[%d] > 0.5));" % (idx, idx, idx)
+                return ("  bus.data[%d] = select(0.0, 1.0, (inputs.data[%d] > 0.5) == (inputs.data[%d] > 0.5));" % (idx, idx, idx))
             if prim == "h4_slide":
                 return (
                     "  // H(4) slide: bus[4*%d+0]=W, +1=Z, +2=Y, +3=X\n" % idx +
-                    "  (*bus).data[4*%d+0] = inputs[%d] + (*state).data[%d] + (*state).data[%d] + (*state).data[%d];\n" % (idx, idx, idx, idx, idx) +
-                    "  (*bus).data[4*%d+1] = inputs[%d] - (*state).data[%d] + (*state).data[%d] - (*state).data[%d];\n" % (idx, idx, idx, idx, idx) +
-                    "  (*bus).data[4*%d+2] = inputs[%d] + (*state).data[%d] - (*state).data[%d] - (*state).data[%d];\n" % (idx, idx, idx, idx, idx) +
-                    "  (*bus).data[4*%d+3] = inputs[%d] - (*state).data[%d] - (*state).data[%d] + (*state).data[%d];" % (idx, idx, idx, idx, idx)
+                    "  bus.data[4*%d+0] = inputs.data[%d] + state.data[%d] + state.data[%d] + state.data[%d];\n" % (idx, idx, idx, idx, idx) +
+                    "  bus.data[4*%d+1] = inputs.data[%d] - state.data[%d] + state.data[%d] - state.data[%d];\n" % (idx, idx, idx, idx, idx) +
+                    "  bus.data[4*%d+2] = inputs.data[%d] + state.data[%d] - state.data[%d] - state.data[%d];\n" % (idx, idx, idx, idx, idx) +
+                    "  bus.data[4*%d+3] = inputs.data[%d] - state.data[%d] - state.data[%d] + state.data[%d];" % (idx, idx, idx, idx, idx)
                 )
             if prim in ("accum",):
                 pt = float(block.params.get("per_tick", 1.0))
-                return ("  if (inputs[%d] > 0.0 && (*state).data[%d] == 0.0) { (*state).data[%d+1] = (*state).data[%d+1] + %sf; }\n"
-                        "  (*state).data[%d] = select(0.0, 1.0, inputs[%d] > 0.0);\n"
-                        "  (*bus).data[%d] = (*state).data[%d+1];") % (idx, idx, idx, idx, repr(pt), idx, idx, idx, idx)
+                return ("  if (inputs.data[%d] > 0.0 && state.data[%d] == 0.0) { state.data[%d+1] = state.data[%d+1] + %sf; }\n"
+                        "  state.data[%d] = select(0.0, 1.0, inputs.data[%d] > 0.0);\n"
+                        "  bus.data[%d] = state.data[%d+1];") % (idx, idx, idx, idx, repr(pt), idx, idx, idx, idx)
             if prim.startswith("viz_"):
                 return "  // viz sink %s (rendered from views[])" % prim
             # generic: passthrough
-            return "  (*bus).data[%d] = inputs[%d];" % (idx, idx)
+            return "  bus.data[%d] = inputs.data[%d];" % (idx, idx)
 
         lines = []
         lines.append("// WGSL for '%s' — %d blocks, %d wires" % (self.name, len(self.blocks), len(self.wires)))
         lines.append("// Generated by atomic.program (target \"wgsl\").")
         lines.append("// Host bridge: bus[] in host RAM (no P2P), tick latency 1.")
         lines.append("")
-        lines.append("struct Bus { data: array<f32> }")
+        n = len(self.blocks)
+        # H4 writes 4 contiguous slots (W/Z/Y/X) starting at 4*idx; reserve 4*n for bus
+        bus_n = 4 * n
+        lines.append("// Bus is 4*n (H4 needs 4 slots per block); params/state/inputs stay n")
+        lines.append("struct Bus { data: array<f32, %d> }" % bus_n)
+        lines.append("struct ParamsBus { data: array<f32, %d> }" % n)
         lines.append("@group(0) @binding(0) var<storage, read_write> bus: Bus;")
-        lines.append("@group(0) @binding(1) var<storage, read> params: Bus;")
-        lines.append("@group(0) @binding(2) var<storage, read_write> state: Bus;")
-        # live bridge region (GPU1 -> host -> GPU0) is the tail of bus[]
-        lines.append("@group(0) @binding(3) var<storage, read_write> bridge: Bus; // host-RAM")
+        lines.append("@group(0) @binding(1) var<storage, read> params: ParamsBus;")
+        lines.append("@group(0) @binding(2) var<storage, read_write> state: ParamsBus;")
+        lines.append("@group(0) @binding(3) var<storage, read_write> bridge: ParamsBus; // host-RAM")
+        lines.append("@group(0) @binding(4) var<storage, read_write> inputs: ParamsBus; // wire latch, 1-tick host bridge")
         lines.append("")
+        # per-block fns read/write the module-scope bus/params/state
         for idx, block in enumerate(self.blocks):
             atom = ATOMS.get(block.primitive)
-            lines.append("fn tick_%s(inputs: ptr<function, array<f32, %d>>, bus: ptr<storage, Bus>, state: ptr<storage, Bus>) {" % (block.id, len(self.blocks)))
+            lines.append("fn tick_%s() {" % block.id)
             lines.append("  let idx = %du;" % idx)
             lines.append(_wgsl_body(block, atom))
             lines.append("}")
             lines.append("")
         lines.append("@compute @workgroup_size(64)")
         lines.append("fn main(@builtin(global_invocation_id) gid: vec3<u32>) {")
-        lines.append("  var inputs: array<f32, %d>;" % len(self.blocks))
         lines.append("  // seed inputs from previous tick's bus + wire latches (host bridge: no P2P)")
         for w in self.wires:
             # estimate lane by block order
@@ -500,11 +505,11 @@ class Program:
                 d_id = w.dst.split(".", 1)[0]
                 s_idx = next(i for i, b in enumerate(self.blocks) if b.id == s_id)
                 d_idx = next(i for i, b in enumerate(self.blocks) if b.id == d_id)
-                lines.append("  inputs[%d] = bus.data[%d]; // %s -> %s (tick latency 1)" % (d_idx, s_idx, w.src, w.dst))
+                lines.append("  inputs.data[%d] = bus.data[%d]; // %s -> %s (tick latency 1)" % (d_idx, s_idx, w.src, w.dst))
             except StopIteration:
                 pass
         for i, b in enumerate(self.blocks):
-            lines.append("  tick_%s(&inputs, &bus, &state);" % b.id)
+            lines.append("  tick_%s();" % b.id)
         lines.append("  // bridge: tail of bus maps to host-RAM for bicameral split (GPU1 -> host -> GPU0)")
         lines.append("}")
         return "\n".join(lines)

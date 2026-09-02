@@ -1725,3 +1725,65 @@ Result: `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest` -> 22/
 `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m pytest tests -q` -> 185 passed.
 Git commit dc24d05 on main, remote origin `https://github.com/bbeartheancient/atomic-computing.git` set.
 No sibling changes (only ~/ATOMIC-PC edited).
+
+## Iteration 24 — Goal A: wgsl naga hard-validate (2026-09-02)
+
+Operator chose goal A. Goal: install `naga` CLI, pin byte-identical
+WGSL -> engine parity on a small H4 patch, run naga validation pass
+on the WGSL output. Scoped concretely: naga-valid WGSL is the
+deliverable; "byte-identical parity" between Python engine (dict bus)
+and WGSL (storage buffer) is not the practical check — the two
+representations differ in layout. naga is the canonical WGSL
+validator.
+
+Built, all in ~/ATOMIC-PC (pure Python + cargo, zero sibling changes):
+
+  * naga 30.0.1 installed (`cargo install naga-cli` -> ~/.cargo/bin/naga,
+    `naga --version` -> 30.0.1, ~22s to compile).
+
+  * `atomic/program.py` `to_wgsl()` rewritten (iter-11 stub was structural
+    only — naga rejected the pointer-arg form):
+    - Removed `ptr<storage, Bus>`/`ptr<storage, ParamsBus>` from per-block
+      fn args (naga 30 rejects `ptr<storage>` as function arg).
+    - Module-scope storage: `@group(0) @binding(0) bus: Bus`,
+      `@binding(1) params: ParamsBus`, `@binding(2) state: ParamsBus`,
+      `@binding(3) bridge: ParamsBus // host-RAM`, `@binding(4) inputs:
+      ParamsBus // wire latch, 1-tick host bridge`. Per-block fns
+      (`fn tick_<id>()`) read/write the module-scope bus/inputs/state.
+    - Bus sized `4*n` (H4 needs 4 slots/block: 4*idx+0..3 = W/Z/Y/X);
+      ParamsBus/State/Inputs/bridge sized `n`. Separate `struct Bus { data:
+      array<f32, 4*n> }` vs `struct ParamsBus { data: array<f32, n> }`.
+    - Per-block bodies switched from `(*bus).data[i]` to `bus.data[i]`
+      (no more deref of pointer args) and `inputs.data[i]` (was
+      `inputs[i]`).
+    - `main(@builtin(global_invocation_id) gid: vec3<u32>)` seeds
+      `inputs.data[d_idx] = bus.data[s_idx]` for each wire (the
+      1-tick host-bridge latch), then dispatches `tick_<id>()` in
+      insertion order.
+
+  * `atomic/selftest.py` s12 `wgsl_naga_shape` extended to actually run
+    `naga` if on PATH (was structural-only before — now asserts naga
+    exit 0). New section 23 (5 checks): naga on PATH, naga --version,
+    naga validates H4 shader, naga validates extended shader (15
+    primitives incl. h4 + smooth + threshold + clamp + sine_lfo),
+    WGSL module-scope struct shape (Bus 4*n, ParamsBus n, fn tick_<id>(),
+    host-RAM, fn main). Two on-the-fly test ports fixed: `th.cv` ->
+    `th.gate` (threshold's actual output port), and removed the
+    `lf.in`/`cl.cv` wires (sine_lfo has no input port).
+
+  * `tests/test_iter24.py` (6 tests): naga installed, naga H4 OK,
+    naga extended OK, naga simple OK, WGSL struct shape, WGSL Bus
+    is `array<f32, 16>` for n=4 blocks (H4 needs 4*idx slots).
+
+  * `README.md` +185 -> 191 tests, 22 -> 23 sections, WGSL contract
+    notes the naga 30.0.1 validation + module-scope storage + Bus 4*n.
+
+  * `ATOMIC-PC-STATE.md`: this section.
+
+Result: `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest`
+-> 23/23 ok (~5s).
+`cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m pytest tests -q` ->
+191 passed (~8s, +6 iter24).
+`naga --version` -> 30.0.1, `naga /tmp/wgsl_*.wgsl` -> "Validation successful"
+on H4 + extended + simple WGSL.
+Working tree clean, no sibling changes.

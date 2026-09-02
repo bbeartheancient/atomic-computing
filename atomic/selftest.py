@@ -1045,14 +1045,25 @@ def s12_checks():
         assert b2.pop(1)=={"x":5.0,"y":6.0}
     checks.append(("bridge H4 encode round-trip", bridge_h4_codec))
     def wgsl_naga_shape():
+        import shutil, subprocess, tempfile, os
         from atomic import Program, Block, Wire
         p = Program("wgsl12", blocks=[Block("c0","const",{"value":1}), Block("g1","gain",{"factor":2}), Block("v0","viz_series")], wires=[Wire("c0.cv","g1.in"), Wire("g1.cv","v0.in")])
         w = p.compile("wgsl")
         assert w.startswith("// WGSL")
         assert "@compute" in w and "@group(0)" in w
         assert "host-RAM" in w and "tick latency 1" in w
-        # per-block fns
         assert "fn tick_c0" in w and "fn tick_g1" in w
+        # naga hard-validate (iter 24: goal A — naga 30.0.1 installed)
+        naga = shutil.which("naga")
+        if naga:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".wgsl", delete=False) as fh:
+                fh.write(w); tmp = fh.name
+            try:
+                out = subprocess.run([naga, tmp], capture_output=True, text=True, timeout=10)
+                os.unlink(tmp)
+                assert out.returncode == 0, "naga rejected: " + out.stderr[:200]
+            finally:
+                if os.path.exists(tmp): os.unlink(tmp)
     checks.append(("wgsl naga shape", wgsl_naga_shape))
     def swarm_determinism():
         from atomic import Swarm, Agent, Display, Program, Block, Wire
@@ -2404,9 +2415,110 @@ def s22_checks():
 
     return checks
 
+def s23_checks():
+    """Goal A: wgsl naga hard-validate — iter 24.
+    naga 30.0.1 installed in ~/.cargo/bin; codegen uses module-scope
+    @group(0) storage vars (bus 4*n, params/state/inputs n), per-block
+    fn tick_<id>() writing to bus/inputs/state, no ptr<storage> args.
+    """
+    import shutil, subprocess, tempfile, os
+    checks = []
+
+    def naga_installed():
+        naga = shutil.which("naga")
+        assert naga, "naga not on PATH (install: cargo install naga-cli)"
+        assert "naga" in naga, "naga path: " + naga
+    checks.append(("naga on PATH (~/.cargo/bin)", naga_installed))
+
+    def naga_version():
+        naga = shutil.which("naga")
+        out = subprocess.run([naga, "--version"], capture_output=True, text=True, timeout=5)
+        assert out.returncode == 0, out.stderr
+        # output is just "30.0.1" or "naga X.Y.Z"
+        assert out.stdout.strip(), "naga --version returned empty"
+    checks.append(("naga --version", naga_version))
+
+    def naga_validate_h4():
+        from atomic import Program, Block, Wire
+        p = Program("wgsl_h4", blocks=[
+            Block("c0","const",{"value":1.0}),
+            Block("g1","gain",{"factor":2.0}),
+            Block("h1","h4_slide"),
+            Block("v0","viz_series"),
+        ], wires=[
+            Wire("c0.cv","g1.in"),
+            Wire("g1.cv","h1.in"),
+            Wire("h1.w","v0.in"),
+        ])
+        w = p.compile("wgsl")
+        assert w.startswith("// WGSL")
+        assert "@compute @workgroup_size(64)" in w
+        assert "@group(0) @binding(0)" in w
+        assert "@group(0) @binding(4)" in w  # inputs
+        assert "fn tick_c0" in w
+        assert "fn tick_h1" in w
+        assert "H(4) slide" in w
+        assert "host-RAM" in w
+        # hard naga validate
+        naga = shutil.which("naga")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".wgsl", delete=False) as fh:
+            fh.write(w); tmp = fh.name
+        try:
+            out = subprocess.run([naga, tmp], capture_output=True, text=True, timeout=10)
+            os.unlink(tmp)
+            assert out.returncode == 0, "naga rejected H4 shader: " + out.stderr[:300]
+        finally:
+            if os.path.exists(tmp): os.unlink(tmp)
+    checks.append(("naga validates H4 shader (bus 4*n)", naga_validate_h4))
+
+    def naga_validate_extended():
+        from atomic import Program, Block, Wire
+        p = Program("wgsl_ext", blocks=[
+            Block("c0","const",{"value":1}),
+            Block("g1","gain",{"factor":2}),
+            Block("b1","bias",{"add":0.5}),
+            Block("th","threshold",{"hi":0.5,"lo":-0.5}),
+            Block("cl","clamp",{"lo":-1,"hi":1}),
+            Block("lf","sine_lfo",{"rate_hz":1.0}),
+            Block("sm","smooth",{"alpha":0.1}),
+            Block("h1","h4_slide"),
+            Block("v0","viz_series"),
+        ], wires=[
+            Wire("c0.cv","g1.in"),
+            Wire("g1.cv","b1.in"),
+            Wire("b1.cv","th.in"),
+            Wire("th.gate","sm.in"),
+            Wire("b1.cv","h1.in"),
+            Wire("sm.cv","v0.in"),
+        ])
+        w = p.compile("wgsl")
+        naga = shutil.which("naga")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".wgsl", delete=False) as fh:
+            fh.write(w); tmp = fh.name
+        try:
+            out = subprocess.run([naga, tmp], capture_output=True, text=True, timeout=10)
+            os.unlink(tmp)
+            assert out.returncode == 0, "naga rejected extended shader: " + out.stderr[:300]
+        finally:
+            if os.path.exists(tmp): os.unlink(tmp)
+    checks.append(("naga validates extended shader (15 primitives)", naga_validate_extended))
+
+    def wgsl_struct_shape():
+        from atomic import Program, Block, Wire
+        p = Program("wgsl_s", blocks=[Block("c0","const",{"value":1}), Block("g1","gain",{"factor":2}), Block("v0","viz_series")], wires=[Wire("c0.cv","g1.in"), Wire("g1.cv","v0.in")])
+        w = p.compile("wgsl")
+        assert "struct Bus" in w
+        assert "struct ParamsBus" in w
+        assert "@group(0) @binding(0) var<storage, read_write> bus: Bus;" in w
+        assert "@group(0) @binding(4) var<storage, read_write> inputs: ParamsBus;" in w
+        assert "fn tick_c0()" in w
+        assert "fn main(@builtin(global_invocation_id) gid: vec3<u32>)" in w
+    checks.append(("wgsl module-scope storage struct shape", wgsl_struct_shape))
+
+    return checks
 
 def main():
-    print("ATOMIC-PC selftest — 22 sections")
+    print("ATOMIC-PC selftest — 23 sections")
     print("="*60)
     results=[]
     results.append(_run_section(1, "bridge", s1_checks))
@@ -2431,6 +2543,7 @@ def main():
     results.append(_run_section(20, "iter5 UI", s20_checks))
     results.append(_run_section(21, "iter6 UI", s21_checks))
     results.append(_run_section(22, "iter7 UI (zoom + accent)", s22_checks))
+    results.append(_run_section(23, "iter24 goal A wgsl naga hard-validate", s23_checks))
     print("="*60)
     ok=sum(1 for r in results if r)
     print(f"selftest: {ok}/{len(results)} sections ok")

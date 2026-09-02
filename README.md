@@ -6,7 +6,7 @@ This dir is the project root and concept home: `ATOMIC-PC-CORE.md` is the single
 
 ## Harness
 
-Pure-Python twin of the fabric `jsfx/evaluatePatch` runtime, 22 sections green.
+Pure-Python twin of the fabric `jsfx/evaluatePatch` runtime, 23 sections green.
 
 ```
 atomic/
@@ -22,8 +22,8 @@ atomic/
   swarm.py decompose.py teach.py evolve.py bridge.py demo.py context.py
   ui/           FastAPI tile wall (port 18094, HTML5 canvas, WebSocket streaming, zoom, accent picker, presets, record/replay, split view)
   ui/static/index.html  4x4 canvas tile wall + heatmap/series/xy/wxyz3d renderers
-tests/          pytest suite mirroring the gauntlet (185 tests)
-atomic/selftest.py  gauntlet (22 sections, ~180 checks, ~5s)
+tests/          pytest suite mirroring the gauntlet (191 tests)
+atomic/selftest.py  gauntlet (23 sections, ~185 checks, ~5s)
 examples/       5 end-to-end live demos (QBF, H4, clock counter, swarm evolve teach, heatmap)
 ```
 
@@ -31,9 +31,9 @@ examples/       5 end-to-end live demos (QBF, H4, clock counter, swarm evolve te
 
 Run from repo root (vendored `fabric/` + `hoa64/` — no external sibling required):
 
-- ATOMIC-PC harness (185 tests): `python -m pytest tests -q`
+- ATOMIC-PC harness (191 tests): `python -m pytest tests -q`
   (oracle MODE 1+2 spawn `node`)
-- ATOMIC-PC gauntlet (22 sections, ~180 checks, ~5s): `python -m atomic.selftest`
+- ATOMIC-PC gauntlet (23 sections, ~185 checks, ~5s): `python -m atomic.selftest`
 - Live demos (5): `python -m examples.qbf_persistence_round_trip`,
   `python -m examples.hadamard_wxyz_scope`, `python -m examples.gated_clock_counter`,
   `python -m examples.swarm_evolve_teach_demo`, `python -m examples.heatmap_animation`
@@ -54,7 +54,7 @@ Verify the vendored harness:
 - **Node rule**: function/control ≤1 input port, N outputs, fan-out free, cables into one input SUM; sinks may stack.
 - **H4**: Row0=W `[+ + + +]` (amplitude/consensus ~61%), Row1=Z `[+ - + -]`, Row2=Y `[+ + - -]`, Row3=X `[+ - - +]` (CORE canonical; audio rotates Z/Y/X 90°).
 - **Trace is the bridge**: pure observer, touched runs stay bit-identical, replay from stored stimulus is bit-identical, 10k-frame ring + QBF portable archive.
-- **WGSL**: `Program.to_wgsl()` emits `@compute @workgroup_size(64) @group(0) bus/params/state/bridge` with per-block `fn tick_<id>` and host-RAM bridge comment; validated by `Display.validate_wgsl()` (structural + `naga` if present).
+- **WGSL**: `Program.to_wgsl()` emits `@compute @workgroup_size(64) @group(0) bus/params/state/bridge/inputs` (module-scope storage, no `ptr<storage>` args) with per-block `fn tick_<id>` and host-RAM bridge comment; validated by `naga` 30.0.1 (cargo) — Bus is `4*n` (H4 needs 4 slots/block), ParamsBus is `n`. `Display.validate_wgsl()` runs `naga` if on PATH (structural fallback otherwise).
 - **Tiles**: 3×3 or 4×4 wall, `Display.heatmap_from_trace()` / `heatmap_from_swarm()` / `heatmap_animation()` render replay onto tiles normalized 0..1.
 - **Retrieval**: `zg` 0.2.1 + `local/potion-code-16m-v2` index (`.zvec-grep/index.zvec`, 40 files / 500 entities) via `atomic/context.py` (`query`/`query_rg`/`assert_retrieval`) — stays green when zg absent, MCP `zvec_grep_search`/`_rg` same store.
 - **UI**: `atomic.ui:app` FastAPI tile wall (port 18094, lifespan auto-registers 7 demo programs) + `ProgramViewer` (batch + per-tick `tick_once` + WebSocket queue broadcast + live tap/param feed apply). REST: `/api/programs`, `/api/control/<p>`, `/api/views/<p>`, `/api/snapshot/<p>`, `/api/tap/<p>`, `/api/feed/<p>`, `/api/batch/<p>`, `/api/stream/<p>`, `/api/record/<p>`, `/api/replay/<p>`; WS: `/ws/<p>` (per-tick snapshot stream + tap/param/feed/batch client msgs + ping/pong RTT + `_lat_eng`/`_lat_ws`). UI features: tile rename (dblclick), preset save/load (localStorage), record/replay (.qbf shard under `~/.runtime/atomic_qbf/ui_records/`), split view (pane 2 with own WS), signed heatmap (intensity + sign), Ctrl+scroll/+/−/0 zoom, accent color picker (overrides theme `--accent`).
