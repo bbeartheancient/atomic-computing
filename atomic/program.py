@@ -61,6 +61,7 @@ _VIZ_OUTPUTS = {
     "viz_series": "cv",
     "viz_xy": "y",
     "viz_wxyz3d": "z",
+    "viz_video": "ready",
 }
 
 
@@ -69,8 +70,19 @@ def _patch_views(blocks):
     for b in blocks:
         output = _VIZ_OUTPUTS.get(b.primitive)
         if output is not None:
-            views.append({"id": b.id, "module": b.id, "output": output,
-                         "as": "series" if b.primitive == "viz_series" else b.primitive[4:]})
+            short = b.primitive[4:]
+            as_name = "series" if b.primitive == "viz_series" else short
+            entry = {"id": b.id, "module": b.id, "output": output,
+                     "as": as_name}
+            if b.primitive == "viz_wxyz3d":
+                entry["key"] = (b.id + ".z").lower()
+            elif b.primitive == "viz_xy":
+                entry["key"] = (b.id + ".y").lower()
+            elif b.primitive == "viz_video":
+                entry["key"] = (b.id + ".frame").lower()
+            else:
+                entry["key"] = (b.id + "." + output).lower()
+            views.append(entry)
     return views
 
 

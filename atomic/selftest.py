@@ -3377,8 +3377,150 @@ def s28_checks():
     return checks
 
 
+def s29_checks():
+    """iter30: viz_video in _VIZ_OUTPUTS, proper view key extraction,
+    drawVideoFrame canvas renderer, /api/feed_frame REST endpoint,
+    JFinChannel.to_dict, JFinM3U.find_by_id/from_discovered_hdhr,
+    _JFIN_STATE singleton, REST endpoints for Jellyfin HDHomeRun."""
+    checks = []
+
+    def viz_video_in_viz_outputs():
+        from atomic.program import _VIZ_OUTPUTS
+        assert "viz_video" in _VIZ_OUTPUTS, "viz_video missing from _VIZ_OUTPUTS"
+        assert _VIZ_OUTPUTS["viz_video"] == "ready", \
+            f"viz_video canonical output should be 'ready', got {_VIZ_OUTPUTS['viz_video']}"
+    checks.append(("viz_video in _VIZ_OUTPUTS with canonical output 'ready'",
+                   viz_video_in_viz_outputs))
+
+    def patch_views_viz_video_key():
+        from atomic.program import _patch_views, Block
+        blocks = [
+            Block("vv", "viz_video"),
+            Block("w3d", "viz_wxyz3d"),
+            Block("xy", "viz_xy"),
+            Block("s", "viz_series"),
+        ]
+        views = _patch_views(blocks)
+        view_map = {v["module"]: v for v in views}
+        assert "vv" in view_map
+        assert view_map["vv"]["key"] == "vv.frame", \
+            f"viz_video key should be 'vv.frame', got {view_map['vv']['key']}"
+        assert view_map["vv"]["as"] == "video"
+        assert "w3d" in view_map
+        assert view_map["w3d"]["key"] == "w3d.z", \
+            f"viz_wxyz3d key should be 'w3d.z', got {view_map['w3d']['key']}"
+        assert "xy" in view_map
+        assert view_map["xy"]["key"] == "xy.y"
+        assert "s" in view_map
+        assert view_map["s"]["key"] == "s.cv"
+    checks.append(("_patch_views generates correct keys for viz_video/wxyz3d/xy/series",
+                   patch_views_viz_video_key))
+
+    def auto_views_viz_video():
+        from atomic.ui.viewer import _auto_views, _VIZ_TYPES
+        assert "viz_video" in _VIZ_TYPES
+        assert _VIZ_TYPES["viz_video"] == "video"
+        mods = [
+            {"id": "v0", "primitive": "viz_video"},
+            {"id": "w0", "primitive": "viz_wxyz3d"},
+        ]
+        views = _auto_views(mods)
+        vmap = {v["module"]: v for v in views}
+        assert "v0" in vmap
+        assert vmap["v0"]["key"] == "v0.frame", \
+            f"auto_views viz_video key should be 'v0.frame', got {vmap['v0']['key']}"
+        assert vmap["v0"]["viz"] == "video"
+        assert "w0" in vmap
+        assert vmap["w0"]["key"] == "w0.z"
+    checks.append(("_auto_views generates correct keys for viz_video and viz_wxyz3d",
+                   auto_views_viz_video))
+
+    def jfin_channel_to_dict():
+        from atomic.jellyfin import JFinChannel
+        ch = JFinChannel("id30", "NAME30", "http://x.m3u8",
+                         logo_url="http://logo.png", tuner_type="hdhr",
+                         group="ATOMIC", number=7)
+        d = ch.to_dict()
+        assert d["id"] == "id30"
+        assert d["name"] == "NAME30"
+        assert d["m3u_url"] == "http://x.m3u8"
+        assert d["logo_url"] == "http://logo.png"
+        assert d["tuner_type"] == "hdhr"
+        assert d["group"] == "ATOMIC"
+        assert d["number"] == 7
+    checks.append(("JFinChannel.to_dict() returns all fields",
+                   jfin_channel_to_dict))
+
+    def jfin_m3u_find_by_id():
+        from atomic.jellyfin import JFinM3U, JFinChannel
+        m3u = JFinM3U()
+        ch1 = JFinChannel("c1", "C1", "http://c1.m3u8")
+        ch2 = JFinChannel("c2", "C2", "http://c2.m3u8")
+        m3u.add_channel(ch1)
+        m3u.add_channel(ch2)
+        found = m3u.find_by_id("c2")
+        assert found is ch2
+        assert m3u.find_by_id("nonexistent") is None
+    checks.append(("JFinM3U.find_by_id returns correct channel or None",
+                   jfin_m3u_find_by_id))
+
+    def jfin_m3u_from_discovered_hdhr():
+        from atomic.jellyfin import JFinM3U
+        m3u = JFinM3U.from_discovered_hdhr(timeout=0.1, base_url="http://localhost:9999")
+        assert isinstance(m3u.channels, list)
+        assert hasattr(m3u, "find_by_id")
+    checks.append(("JFinM3U.from_discovered_hdhr (may find 0 devices without real HDHR on LAN)",
+                   jfin_m3u_from_discovered_hdhr))
+
+    def jfin_state_singleton():
+        from atomic.jellyfin import _JFIN_STATE, JFinM3U, JFinScheduler
+        assert isinstance(_JFIN_STATE.m3u, JFinM3U)
+        assert isinstance(_JFIN_STATE.scheduler, JFinScheduler)
+        assert len(_JFIN_STATE.m3u.channels) >= 4
+        assert "atomic-01" in {ch.id for ch in _JFIN_STATE.m3u.channels}
+    checks.append(("_JFIN_STATE singleton: m3u + scheduler initialized with default channels",
+                   jfin_state_singleton))
+
+    def viewer_feed_frame():
+        from atomic import Program, Block
+        from atomic.ui.viewer import Viewer
+        p = Program("ff_test", blocks=[
+            Block("vv", "viz_video"),
+        ])
+        v = Viewer(p, name="ff_test")
+        frame = b"\x80\x40\x20\x10" * 8 * 8
+        ok = v.feed_frame("vv", frame)
+        assert ok is True
+        eng = v.engine
+        assert eng.bus.get("vv.frame") == frame
+    checks.append(("Viewer.feed_frame injects bytes into bus",
+                   viewer_feed_frame))
+
+    def discover_hdhr_timeout_param():
+        from atomic.jellyfin import JFinM3U
+        devs = JFinM3U.discover_hdhr(timeout=0.05)
+        assert isinstance(devs, list)
+        assert all("device_id" in d for d in devs)
+    checks.append(("JFinM3U.discover_hdhr accepts timeout param",
+                   discover_hdhr_timeout_param))
+
+    def server_feed_frame_endpoint_import():
+        from atomic.ui import server
+        app = server.create_app()
+        routes = [r.path for r in app.routes]
+        assert "/api/feed_frame/{name}" in routes, \
+            f"Missing /api/feed_frame endpoint. Routes: {routes}"
+        assert "/api/jfin/discover" in routes
+        assert "/api/jfin/channels" in routes
+        assert "/api/jfin/export/{ch_id}/push" in [r.path for r in app.routes]
+    checks.append(("FastAPI server: /api/feed_frame + /api/jfin/* endpoints registered",
+                   server_feed_frame_endpoint_import))
+
+    return checks
+
+
 def main():
-    print("ATOMIC-PC selftest — 28 sections")
+    print("ATOMIC-PC selftest — 29 sections")
     print("="*60)
     results=[]
     results.append(_run_section(1, "bridge", s1_checks))
@@ -3409,6 +3551,7 @@ def main():
     results.append(_run_section(26, "iter27 video generation (H3 + viz_video + swarm bank)", s26_checks))
     results.append(_run_section(27, "iter28 Jellyfin/HDHomeRun (jfin_live_export + scheduler + M3U + rotation)", s27_checks))
     results.append(_run_section(28, "iter29 DASH + mock ffmpeg + keyframe + seeded rotation + Swarm H4 routing", s28_checks))
+    results.append(_run_section(29, "iter30 viz_video+REST+JFin HDHomeRun", s29_checks))
     print("="*60)
     ok=sum(1 for r in results if r)
     print(f"selftest: {ok}/{len(results)} sections ok")

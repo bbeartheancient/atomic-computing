@@ -241,6 +241,12 @@ class Viewer:
         self._last_eng_us = eng_us
         self._last_ws_us = ws_us
 
+    def feed_frame(self, module_id: str, frame_bytes: bytes | bytearray | memoryview):
+        eng = self.engine
+        key = module_id + ".frame"
+        eng.bus.set(key, bytes(frame_bytes))
+        return True
+
     @property
     def last_latency(self) -> tuple[float, float]:
         return (getattr(self, '_last_eng_us', 0.0),
@@ -295,6 +301,7 @@ _VIZ_TYPES = {
     "viz_series": "series",
     "viz_xy": "xy",
     "viz_wxyz3d": "wxyz3d",
+    "viz_video": "video",
 }
 
 
@@ -322,6 +329,12 @@ def _auto_views(modules: list[dict], cols: int = 4) -> list[dict]:
             out.append({
                 "id": mid, "module": mid, "output": "z",
                 "key": (mid + ".z").lower(),
+                "as": vtype, "viz": vtype,
+            })
+        elif vtype == "video":
+            out.append({
+                "id": mid, "module": mid, "output": "ready",
+                "key": (mid + ".frame").lower(),
                 "as": vtype, "viz": vtype,
             })
     for i, v in enumerate(out):

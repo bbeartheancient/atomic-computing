@@ -12,6 +12,15 @@ Routes:
   POST /api/batch/{name}          -> {ticks: N}  -> run a batch and return the final snapshot
   GET  /api/stream/{name}         -> SSE tick stream (server pushes snapshot every tick)
   WS   /ws/{name}                 -> WebSocket live tick stream (preferred)
+  POST /api/feed_frame/{name}     -> push RGBA bytes to viz_video module frame bus key
+  GET  /api/jfin/discover          -> HDHomeRun device discovery
+  GET  /api/jfin/channels          -> list registered Jellyfin/HDHomeRun channels
+  POST /api/jfin/channels          -> add a channel (name, m3u_url, etc.)
+  GET  /api/jfin/exporters         -> list active JFinExporter instances
+  POST /api/jfin/export/{ch_id}/start -> start an exporter for a channel
+  POST /api/jfin/export/{ch_id}/push  -> push a frame to an exporter
+  POST /api/jfin/export/{ch_id}/stop  -> stop an exporter
+  GET  /api/jfin/scheduler          -> JFinScheduler state (rotation, stats)
 
 The UI is a pure-web client.  The server is the bridge between the
 HTML5 tile wall (canvas redraws per tick) and the Python engine
@@ -29,7 +38,7 @@ import time
 from typing import Any
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -220,6 +229,193 @@ def create_app() -> FastAPI:
         if v is None:
             raise HTTPException(404, f"program {name!r} not found")
         return v.ws_stats()
+
+    # ── iter 30: viz_video frame push + JFin HDHomeRun export endpoints ──
+    @app.post("/api/feed_frame/{name}")
+    async def feed_frame(name: str, req: Request):
+        from starlette.requests import Request as _Req
+        v = Viewer.get(name)
+        if v is None:
+            v = _auto_register(name)
+        if v is None:
+            raise HTTPException(404, f"program {name!r} not found")
+        # accept either raw bytes (image/rgba) or JSON {module, data: base64}
+        ctype = (req.headers.get("content-type") or "").lower()
+        if ctype.startswith("application/json") or ctype.startswith("text/"):
+            try:
+                payload = await req.json()
+            except Exception:
+                raise HTTPException(400, "json parse failed")
+            mid = payload.get("module")
+            if not mid:
+                raise HTTPException(400, "missing 'module'")
+            data = payload.get("data")
+            if isinstance(data, str):
+                import base64 as _b64
+                try:
+                    raw = _b64.b64decode(data)
+                except Exception:
+                    raise HTTPException(400, "base64 decode failed")
+            elif isinstance(data, (bytes, bytearray)):
+                raw = bytes(data)
+            elif isinstance(data, list):
+                raw = bytes(int(x) & 0xff for x in data)
+            else:
+                raise HTTPException(400, "data must be base64 str, bytes, or list")
+        else:
+            raw = await req.body()
+            mid_q = req.query_params.get("module")
+            if not mid_q:
+                raise HTTPException(400, "missing 'module' query param")
+            mid = mid_q
+        v.feed_frame(mid, raw)
+        return {"ok": True, "module": mid, "bytes": len(raw)}
+
+    @app.get("/api/jfin/discover")
+    async def jfin_discover(timeout: float = 2.0):
+        from ..jellyfin import JFinM3U
+        import time as _t
+        t0 = _t.perf_counter()
+        devices = JFinM3U.discover_hdhr(timeout=timeout)
+        return {
+            "devices": devices,
+            "count": len(devices),
+            "elapsed_s": round(_t.perf_counter() - t0, 3),
+        }
+
+    @app.get("/api/jfin/channels")
+    async def jfin_channels_list():
+        from ..jellyfin import _JFIN_STATE
+        st = _JFIN_STATE
+        return {
+            "channels": [ch.to_dict() if hasattr(ch, "to_dict") else {
+                "id": ch.id, "name": ch.name, "m3u_url": ch.m3u_url,
+                "tuner_type": ch.tuner_type, "group": ch.group, "number": ch.number}
+                for ch in st.m3u.channels],
+            "count": len(st.m3u.channels),
+        }
+
+    @app.post("/api/jfin/channels")
+    async def jfin_channels_add(payload: dict):
+        from ..jellyfin import JFinChannel, _JFIN_STATE
+        required = ("id", "name", "m3u_url")
+        for k in required:
+            if k not in payload:
+                raise HTTPException(400, f"missing {k!r}")
+        ch = JFinChannel(
+            id=payload["id"], name=payload["name"],
+            m3u_url=payload["m3u_url"],
+            logo_url=payload.get("logo_url", ""),
+            tuner_type=payload.get("tuner_type", "hdhr"),
+            group=payload.get("group", "ATOMIC"),
+            number=int(payload.get("number", 1)),
+        )
+        _JFIN_STATE.m3u.add_channel(ch)
+        return {"ok": True, "channel": ch.id}
+
+    @app.post("/api/jfin/channels/from_discovered")
+    async def jfin_channels_from_discovered(payload: dict | None = None):
+        from ..jellyfin import JFinM3U, JFinChannel, _JFIN_STATE
+        timeout = float((payload or {}).get("timeout", 1.0))
+        base_url = (payload or {}).get("base_url", "http://localhost:8080")
+        devices = JFinM3U.discover_hdhr(timeout=timeout)
+        added = []
+        for d in devices:
+            tuner_count = int(d.get("tuner_count", 1)) if str(d.get("tuner_count", "1")).isdigit() else 1
+            for t in range(tuner_count):
+                ch_id = f"hdhr-{d.get('device_id', 'unknown')}-t{t+1}"
+                ch = JFinChannel(
+                    id=ch_id,
+                    name=f"HDHR {d.get('device_id', '?')} Tuner {t+1}",
+                    m3u_url=f"{base_url}/livetv/{ch_id}/live.m3u8",
+                    tuner_type="hdhr",
+                    group="ATOMIC",
+                    number=len(_JFIN_STATE.m3u.channels) + 1,
+                )
+                _JFIN_STATE.m3u.add_channel(ch)
+                added.append(ch_id)
+        return {"ok": True, "discovered": devices, "added": added,
+                "total": len(_JFIN_STATE.m3u.channels)}
+
+    @app.get("/api/jfin/exporters")
+    async def jfin_exporters():
+        from ..jellyfin import _JFIN_STATE
+        return {"exporters": _JFIN_STATE.scheduler.stats()}
+
+    @app.post("/api/jfin/export/{ch_id}/start")
+    async def jfin_export_start(ch_id: str, payload: dict | None = None):
+        from ..jellyfin import _JFIN_STATE
+        ch = _JFIN_STATE.m3u.find_by_id(ch_id)
+        if ch is None:
+            raise HTTPException(404, f"channel {ch_id!r} not found")
+        p = payload or {}
+        exp = _JFIN_STATE.scheduler.register_channel(
+            ch,
+            hls_dir=p.get("hls_dir"),
+            width=int(p.get("width", 640)),
+            height=int(p.get("height", 360)),
+            muxer=p.get("muxer", "hls"),
+            mock=bool(p.get("mock", True)),
+        )
+        return {"ok": True, "channel": ch_id, "m3u_url": exp.m3u_url}
+
+    @app.post("/api/jfin/export/{ch_id}/push")
+    async def jfin_export_push(ch_id: str, req: Request):
+        from ..jellyfin import _JFIN_STATE
+        ch = _JFIN_STATE.m3u.find_by_id(ch_id)
+        if ch is None:
+            raise HTTPException(404, f"channel {ch_id!r} not registered (use /api/jfin/channels)")
+        ctype = (req.headers.get("content-type") or "").lower()
+        if ctype.startswith("application/json"):
+            payload = await req.json()
+            data = payload.get("data")
+            if isinstance(data, str):
+                import base64 as _b64
+                raw = _b64.b64decode(data)
+            elif isinstance(data, list):
+                raw = bytes(int(x) & 0xff for x in data)
+            else:
+                raise HTTPException(400, "data must be base64 str or list")
+            w = int(payload.get("width", 0)) or None
+            h = int(payload.get("height", 0)) or None
+            kf = bool(payload.get("force_key", False))
+        else:
+            raw = await req.body()
+            w_q = req.query_params.get("width")
+            h_q = req.query_params.get("height")
+            w = int(w_q) if w_q and w_q.isdigit() else None
+            h = int(h_q) if h_q and h_q.isdigit() else None
+            kf = req.query_params.get("force_key", "0") in ("1", "true", "yes")
+        ok = _JFIN_STATE.scheduler.push_frame(ch_id, raw, width=w, height=h, force_key=kf)
+        return {"ok": ok, "channel": ch_id, "bytes": len(raw)}
+
+    @app.post("/api/jfin/export/{ch_id}/stop")
+    async def jfin_export_stop(ch_id: str):
+        from ..jellyfin import _JFIN_STATE
+        exp = _JFIN_STATE.scheduler.exporters.get(ch_id)
+        if exp is None:
+            raise HTTPException(404, f"no exporter for {ch_id!r}")
+        exp.stop()
+        return {"ok": True, "channel": ch_id}
+
+    @app.get("/api/jfin/scheduler")
+    async def jfin_scheduler():
+        from ..jellyfin import _JFIN_STATE
+        return {
+            "channels": list(_JFIN_STATE.scheduler.channels.keys()),
+            "exporters": list(_JFIN_STATE.scheduler.exporters.keys()),
+            "rotation_cursor": _JFIN_STATE.scheduler._rotation_cursor,
+            "stats": _JFIN_STATE.scheduler.stats(),
+        }
+
+    @app.post("/api/jfin/rotate")
+    async def jfin_rotate(payload: dict):
+        from ..jellyfin import _JFIN_STATE
+        programs = payload.get("programs") or []
+        if not isinstance(programs, list) or not programs:
+            raise HTTPException(400, "programs must be a non-empty list")
+        mode = payload.get("mode", "round_robin")
+        return _JFIN_STATE.scheduler.rotate(programs, mode=mode)
 
     # ── iter 4: record live WS to .qbf shard, list runs, replay ─────────────
     @app.post("/api/record/{name}")

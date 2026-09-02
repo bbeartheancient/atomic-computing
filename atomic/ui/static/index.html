@@ -1660,6 +1660,69 @@ function drawWXYZ3D(canvas, series, wKey, xKey, yKey, zKey, colorOverride) {
   _line(canvas, ox, oy, axZ[0], axZ[1], '#4488ff80', 1);
 }
 
+// ── viz_video: draw the latest RGBA frame on the tile canvas (iter 30) ────────
+// Reads the frame from the live bus at <id>.rgba (bytes) or <id>.rgba_decoded.
+// Reconstructs the <w,x,y,z> latches from state.series for the on-tile HUD.
+function drawVideoFrame(canvas, view, bus, series, colorOverride) {
+  const W = canvas.width, H = canvas.height;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, W, H);
+  const mid = view.module;
+  const rgbaRaw = bus[mid + '.rgba'];
+  const rgbaDec = bus[mid + '.rgba_decoded'];
+  const wKey = (mid + '.w').toLowerCase();
+  const xKey = (mid + '.x').toLowerCase();
+  const yKey = (mid + '.y').toLowerCase();
+  const zKey = (mid + '.z').toLowerCase();
+  const wv = series[wKey] ? series[wKey][series[wKey].length - 1] : null;
+  const xv = series[xKey] ? series[xKey][series[xKey].length - 1] : null;
+  const yv = series[yKey] ? series[yKey][series[yKey].length - 1] : null;
+  const zv = series[zKey] ? series[zKey][series[zKey].length - 1] : null;
+  const ready = (bus[mid + '.ready'] !== undefined) ? bus[mid + '.ready'] : null;
+  let drew = false;
+  const drawPixels = (bytes) => {
+    let b;
+    if (bytes instanceof Uint8Array) b = bytes;
+    else if (bytes && bytes.byteLength !== undefined && bytes.buffer) {
+      b = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    } else if (typeof Blob !== 'undefined' && bytes instanceof Blob) {
+      // not synchronous — skip
+      return false;
+    } else {
+      try { b = new Uint8Array(bytes); } catch (e) { return false; }
+    }
+    const n = b.length;
+    if (n < 4) return false;
+    // assume square RGBA; fallback to 64x64 if dimensions unknown
+    let side = Math.round(Math.sqrt(n / 4));
+    if (side * side * 4 !== n) side = 64;
+    const img = ctx.createImageData(side, side);
+    img.data.set(b.subarray(0, side * side * 4));
+    ctx.imageSmoothingEnabled = false;
+    ctx.putImageData(img, 0, 0);
+    // scale to canvas
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(ctx.canvas, 0, 0, side, side, 0, 0, W, H);
+    return true;
+  };
+  if (rgbaDec) drew = drawPixels(rgbaDec) || drew;
+  else if (rgbaRaw) drew = drawPixels(rgbaRaw) || drew;
+  if (!drew) {
+    ctx.fillStyle = '#222244';
+    ctx.font = '10px monospace';
+    ctx.fillText('no frame', 6, 14);
+  }
+  // HUD: W/X/Y/Z latches and ready
+  ctx.fillStyle = '#00000088';
+  ctx.fillRect(2, H - 38, W - 4, 36);
+  ctx.fillStyle = colorOverride || '#00d4ff';
+  ctx.font = '10px monospace';
+  const fmt = (v) => (v === null || v === undefined) ? '·' : v.toFixed(2);
+  ctx.fillText('W=' + fmt(wv) + '  X=' + fmt(xv) + '  Y=' + fmt(yv) + '  Z=' + fmt(zv), 6, H - 26);
+  ctx.fillText('ready=' + fmt(ready) + '  bus.' + mid + '.rgba', 6, H - 14);
+}
+
 // ── Tile rendering dispatch ────────────────────────────────────────────────────
 function _isGroupLead(row, col, pane) {
   pane = pane || 'tile';
@@ -1735,6 +1798,8 @@ function renderTile(tileRow, tileCol, views, series, heatmap, pane) {
   } else if (viz === 'wxyz3d') {
     const [wk, xk, yk, zk] = _wxyz_keys(key);
     drawWXYZ3D(canvas, series, wk, xk, yk, zk, tileColor);
+  } else if (viz === 'video') {
+    drawVideoFrame(canvas, view, state.bus, series, tileColor);
   }
 }
 
@@ -1793,6 +1858,8 @@ function renderGroup(gid, tiles, views, series, heatmap, pane) {
     } else if (viz === 'wxyz3d') {
       const [wk, xk, yk, zk] = _wxyz_keys(key);
       drawWXYZ3D(off, series, wk, xk, yk, zk, tileColor);
+    } else if (viz === 'video') {
+      drawVideoFrame(off, view, state.bus, series, tileColor);
     } else if (viz === 'heatmap') {
       for (let r = r0; r <= r1; r++) {
         for (let c = c0; c <= c1; c++) {

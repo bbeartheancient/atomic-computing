@@ -124,6 +124,13 @@ class JFinChannel:
         f += f'{self.m3u_url}\n'
         return f
 
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id, "name": self.name, "m3u_url": self.m3u_url,
+            "logo_url": self.logo_url, "tuner_type": self.tuner_type,
+            "group": self.group, "number": self.number,
+        }
+
     def __repr__(self):
         return f"JFinChannel({self.id!r}, {self.name!r}, {self.m3u_url!r})"
 
@@ -389,6 +396,12 @@ class JFinM3U:
     def add_channel(self, channel: JFinChannel):
         self.channels.append(channel)
 
+    def find_by_id(self, ch_id: str) -> JFinChannel | None:
+        for ch in self.channels:
+            if ch.id == ch_id:
+                return ch
+        return None
+
     def write(self, filename="atomic.m3u", fp=None) -> str:
         """Write the M3U playlist to livetv_dir/filename.
 
@@ -492,17 +505,19 @@ class JFinM3U:
         return out
 
     @staticmethod
-    def discover_hdhr() -> list[dict]:
+    def discover_hdhr(timeout: float = 2.0) -> list[dict]:
         """Probe HDHomeRun devices on the LAN via UDP broadcast.
 
         Returns a list of discovered devices with keys: device_type,
         device_id, firmware, tuner_count, ip.
+
+        `timeout` (iter 30): how long to wait for replies in seconds.
         """
         results = []
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            sock.settimeout(2.0)
+            sock.settimeout(max(0.1, float(timeout)))
             msg = b"HTTP/1.1 0x10d6ccf0\r\n"
             sock.sendto(msg, ("255.255.255.255", 65001))
             while True:
@@ -519,7 +534,10 @@ class JFinM3U:
                         elif ln.startswith("DeviceType:") or ln.startswith("device-type:"):
                             device_type = ln.split(":", 1)[1].strip()
                         elif ln.startswith("TunerCount:") or ln.startswith("tuner-count:"):
-                            tuner_count = int(ln.split(":", 1)[1].strip())
+                            try:
+                                tuner_count = int(ln.split(":", 1)[1].strip())
+                            except ValueError:
+                                tuner_count = 0
                         elif ln.startswith("FirmwareVersion:") or ln.startswith("firmware-version:"):
                             firmware = ln.split(":", 1)[1].strip()
                     if device_id:
@@ -535,6 +553,34 @@ class JFinM3U:
         except OSError:
             pass
         return results
+
+    @staticmethod
+    def from_discovered_hdhr(base_url: str = "http://localhost:8080",
+                             timeout: float = 1.0,
+                             livetv_dir: str | None = None) -> "JFinM3U":
+        """Run HDHomeRun discovery and auto-generate one JFinChannel per
+        tuner (iter 30).
+
+        Returns a fresh JFinM3U whose channels list is populated from
+        the discovered devices (one channel per tuner per device).
+        """
+        m3u = JFinM3U(livetv_dir=livetv_dir)
+        devices = JFinM3U.discover_hdhr(timeout=timeout)
+        for d in devices:
+            tuner_count = int(d.get("tuner_count", 0) or 1)
+            for t in range(max(1, tuner_count)):
+                dev_id = d.get("device_id", "unknown")
+                ch_id = f"hdhr-{dev_id}-t{t+1}"
+                ch = JFinChannel(
+                    id=ch_id,
+                    name=f"HDHR {dev_id} Tuner {t+1}",
+                    m3u_url=f"{base_url}/livetv/{ch_id}/live.m3u8",
+                    tuner_type="hdhr",
+                    group="ATOMIC",
+                    number=len(m3u.channels) + 1,
+                )
+                m3u.add_channel(ch)
+        return m3u
 
     def __repr__(self):
         return f"JFinM3U({len(self.channels)} channels, dir={self.livetv_dir!r})"
@@ -705,3 +751,18 @@ def make_default_channels(n=4, base_url="http://localhost:8080") -> list[JFinCha
         )
         channels.append(ch)
     return channels
+
+
+class _JFinState:
+    """Global Jellyfin/HDHomeRun state (singleton, thread-safe for REST)."""
+    __slots__ = ("m3u", "scheduler")
+
+    def __init__(self):
+        self.m3u = JFinM3U()
+        self.scheduler = JFinScheduler()
+        for ch in make_default_channels(n=4):
+            self.m3u.add_channel(ch)
+            self.scheduler.channels[ch.id] = ch
+
+
+_JFIN_STATE = _JFinState()
