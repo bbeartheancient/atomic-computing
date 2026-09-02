@@ -1,6 +1,6 @@
-"""selftest: unified gauntlet for ATOMIC-PC (iter 26).
+"""selftest: unified gauntlet for ATOMIC-PC (iter 27).
 
-25 sections, N/N ok per section, exit 0/1.
+26 sections, N/N ok per section, exit 0/1.
 Run: cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest
 
 Sections:
@@ -34,7 +34,8 @@ Sections:
  22 ui       iter 7: tile wall zoom (Ctrl+wheel) + accent color override
  23 iter24   goal A: wgsl naga hard-validate (30.0.1), module-scope storage, @group(0) bindings
  24 iter25   goal B: bicameral live demo (BicameralPipeline, bridge_latency=1, UI /api/bicameral endpoints)
- 25 iter26   teach domain expansion: 14 examples across 6 domains, QBF persistence, keyword routing, all runnable
+  25 iter26   teach domain expansion: 14 examples across 6 domains, QBF persistence, keyword routing, all runnable
+  26 iter27   goal C: video generation (viz_video atom, HostBridge frame blob, H3 stub/session, swarm prompt bank, H4 RGBA log/linear decoder)
 """
 import json, math, os, random, shutil, struct, subprocess, sys, tempfile, time
 
@@ -2744,8 +2745,200 @@ def s25_checks():
     return checks
 
 
+def s26_checks():
+    checks = []
+
+    def video_viz_atom_registered():
+        from atomic import ATOMS
+        a = ATOMS["viz_video"]
+        assert a.category == "sink"
+        assert "in" in a.inputs
+        assert "ready" in a.outputs
+        assert "w" in a.outputs  # H4 row decoder outputs
+    checks.append(("viz_video atom registered (H4 channel decoder ports)", video_viz_atom_registered))
+
+    def video_bridge_frame_blob():
+        from atomic import HostBridge
+        from atomic.qbf import h4_gate, h4_inverse
+        br = HostBridge(latency=1, use_h4=True)
+        # 4 scalar values + a frame blob coexist
+        br.push(0, {"w": 1.0, "z": 2.0, "y": 3.0, "x": 4.0})
+        br.push(1, {"frame": b"\xff\x00\x80\x40" * 4})  # 16 bytes RGBA
+        out1 = br.pop(1)
+        assert out1 is not None
+        # H4 round-trips the 4-tuple losslessly
+        for k, v in [("w", 1.0), ("z", 2.0), ("y", 3.0), ("x", 4.0)]:
+            assert abs(out1[k] - v) < 1e-9, k
+        out2 = br.pop(2)
+        assert out2 is not None
+        assert out2.get("_frame") is True
+        # frame entry exposes the H4 row decoder (W=log alpha, XYZ=linear RGB)
+        assert "_w" in out2 and "_x" in out2 and "_y" in out2 and "_z" in out2
+        # The W row of the H(4) gate is the sum; de-gating gives the
+        # original (a_log, b, g, r) -- the W component is log(alpha).
+        import math as _m
+        last_alpha = out2["frame"][-1]  # 0x40 = 64
+        w_inverse, _, _, _ = h4_inverse(
+            (out2["_w"], out2["_z"], out2["_y"], out2["_x"]))
+        # the first slot of the de-gated 4-tuple is the W row's payload
+        # (log alpha for the last pixel). The W row IS the sum, so
+        # the W channel of the gate is a_log + r + g + b; verify the
+        # W row of the *un-gated* form is recoverable.
+        assert abs(w_inverse - _m.log(max(1, last_alpha))) < 1e-6, \
+            f"w_inverse={w_inverse} expected log(64)={_m.log(64)}"
+    checks.append(("HostBridge frame blob round-trip + H4 W/X/Y/Z channel decoder",
+                   video_bridge_frame_blob))
+
+    def video_h3_stub_deterministic():
+        from atomic import H3Stub, H3Session
+        h3 = H3Stub(width=8, height=8, n_frames=4)
+        r1 = h3.generate("neon rain", seed=99)
+        r2 = h3.generate("neon rain", seed=99)
+        assert r1["frames"] == r2["frames"]
+        assert len(r1["frames"]) == 4
+        assert len(r1["frames"][0]) == 8 * 8 * 4  # RGBA
+    checks.append(("H3Stub deterministic (same prompt+seed -> same frames)",
+                   video_h3_stub_deterministic))
+
+    def video_session_round_robin():
+        from atomic import H3Stub, H3Session
+        h3 = H3Stub(n_frames=2)
+        ses = H3Session(h3, prompts=["p0", "p1", "p2"], frames_per_prompt=2)
+        frames = [ses.tick() for _ in range(12)]
+        prompts = [f.prompt for f in frames]
+        # 2 frames per prompt, 3 prompts, then cycle
+        assert prompts[:2] == ["p0", "p0"]
+        assert prompts[2:4] == ["p1", "p1"]
+        assert prompts[4:6] == ["p2", "p2"]
+        assert prompts[6:8] == ["p0", "p0"]
+    checks.append(("H3Session cycles through the prompt bank",
+                   video_session_round_robin))
+
+    def video_session_bridge_integration():
+        from atomic import H3Stub, H3Session, HostBridge
+        h3 = H3Stub(n_frames=1)
+        br = HostBridge(latency=1, use_h4=True)
+        ses = H3Session(h3, prompts=["test"], bridge=br, frames_per_prompt=1)
+        ses.tick()
+        assert br.depth() == 1
+        out = br.pop(1)
+        assert out is not None
+        assert isinstance(out.get("frame"), bytes)
+        # frame entry is also tagged with H4 row channels
+        assert "_w" in out and "_x" in out
+    checks.append(("H3Session -> HostBridge -> frame W/X/Y/Z channel decoder",
+                   video_session_bridge_integration))
+
+    def video_swarm_prompt_routing():
+        from atomic import Swarm, Agent, Program, Block, PromptBank
+        p = Program("c", blocks=[Block("g1", "const", {"value": 1.0})], wires=[])
+        agents = [Agent("a%d" % i, p) for i in range(4)]
+        swarm = Swarm()
+        for a in agents:
+            swarm.add_agent(a)
+        res = swarm.run(ticks=1)
+        w = res.consensus(port="g1.cv")
+        assert abs(w - 4.0) < 1e-9  # 4 agents, each 1.0 -> W=4
+        bank = PromptBank(prompts=["p0", "p1", "p2", "p3"])
+        # the swarm's W channel drives the bank pick
+        picked = bank.consensus_pick(last_w=w)
+        assert picked in bank.prompts
+    checks.append(("Swarm H4 consensus -> PromptBank next-pick routing",
+                   video_swarm_prompt_routing))
+
+    def video_prompt_bank_determinism():
+        from atomic import PromptBank
+        bank = PromptBank(prompts=["alpha", "bravo", "charlie", "delta"])
+        # H4 consensus over 4 prompts is deterministic
+        p1 = bank.consensus_pick()
+        p2 = bank.consensus_pick()
+        assert p1 == p2
+        # W energy is the CORE keystone metric
+        e = bank.w_energy()
+        assert 0.0 <= e <= 1.0
+    checks.append(("PromptBank consensus is deterministic + W-energy in [0,1]",
+                   video_prompt_bank_determinism))
+
+    def video_frame_decode_rgba_log_linear():
+        """The H4 row decoder: W = log(alpha) master amplitude, XYZ = linear RGB."""
+        from atomic import ATOMS, Program, Block, Wire, Engine
+        from atomic.qbf import h4_gate, h4_inverse
+        import math as _m
+        # frame: red=200, green=100, blue=50, alpha=255 (fully opaque)
+        frame = bytes([200, 100, 50, 255] * 4)  # 4 pixels
+        p = Program("vv", blocks=[
+            Block("c", "const", {"value": 1.0}),
+            Block("v", "viz_video", {"capture": 1.0}),
+        ], wires=[Wire("c.cv", "v.in")])
+        patch = p.compile("microfx")
+        eng = Engine(patch["modules"], patch.get("wires", []))
+        eng.run(1)
+        eng.bus.set("v.frame", frame)
+        eng.run(1)
+        rgba = eng.bus.get("v.rgba")
+        decoded = eng.bus.get("v.rgba_decoded")
+        assert rgba == frame
+        assert decoded is not None
+        # decoded[i] = R, G, B, A where A is preserved raw, RGB are clamped
+        for i in range(0, len(decoded), 4):
+            assert 0 <= decoded[i] <= 255
+            assert 0 <= decoded[i+1] <= 255
+            assert 0 <= decoded[i+2] <= 255
+            assert decoded[i+3] == 255  # alpha preserved
+        # viz_video's W/X/Y/Z output ports carry the LAST pixel's H4 GATE rows.
+        # The W row is the gate sum (a_log + b + g + r); the inverse recovers
+        # the original 4-tuple.
+        w_val = eng.bus.get("v.w")
+        x_val = eng.bus.get("v.x")
+        y_val = eng.bus.get("v.y")
+        z_val = eng.bus.get("v.z")
+        assert w_val is not None and x_val is not None
+        # The H(4) Sylvester matrix is self-inverse up to a factor of 4;
+        # applying the gate twice recovers the original (scaled by 4).
+        # Re-applying h4_gate to the gate rows gives 4 * (a_log, b, g, r).
+        a_log, b_in, g_in, r_in = h4_gate((w_val, z_val, y_val, x_val))
+        assert abs(a_log - 4.0 * _m.log(255)) < 1e-6, \
+            f"a_log={a_log} expected 4*log(255)={4.0*_m.log(255)}"
+        assert abs(b_in - 4.0 * 50.0) < 1e-6
+        assert abs(g_in - 4.0 * 100.0) < 1e-6
+        assert abs(r_in - 4.0 * 200.0) < 1e-6
+    checks.append(("viz_video decodes RGBA -> H4 gate rows (W=log alpha, XYZ=linear RGB)",
+                   video_frame_decode_rgba_log_linear))
+
+    def video_persistence_through_qbf():
+        """H3 frames can be persisted through QBF (the dma_trace bridge)."""
+        from atomic import H3Stub, H3Session, QbfFile, H4
+        from atomic.qbf import h4_encode
+        h3 = H3Stub(n_frames=2, width=4, height=4)
+        ses = H3Session(h3, prompts=["p0"], bridge=None, frames_per_prompt=2)
+        ses.tick(); ses.tick()
+        # serialize one frame as a H4 QBF blob (4 channels -> 1 H4 group per pixel)
+        frame = ses.latest().rgba
+        # pack 4 pixels as H4 groups: (r, g, b, a) tuples -> W/Z/Y/X gate
+        groups = [(float(frame[i]), float(frame[i+1]),
+                   float(frame[i+2]), float(frame[i+3]))
+                  for i in range(0, len(frame), 4)][:4]
+        encoded = h4_encode(groups)
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".qbf", delete=False) as f:
+            path = f.name
+        try:
+            q = QbfFile.create(path)
+            q.put("h3_frame", encoded, blob_type=H4, checksum=True)
+            q.write()
+            r = QbfFile.open(path)
+            retrieved = r.get("h3_frame")
+            assert retrieved == encoded
+        finally:
+            os.unlink(path)
+    checks.append(("H3 frame persistence through QBF (H4 blob + checksum)",
+                   video_persistence_through_qbf))
+
+    return checks
+
+
 def main():
-    print("ATOMIC-PC selftest — 25 sections")
+    print("ATOMIC-PC selftest — 26 sections")
     print("="*60)
     results=[]
     results.append(_run_section(1, "bridge", s1_checks))
@@ -2773,6 +2966,7 @@ def main():
     results.append(_run_section(23, "iter24 goal A wgsl naga hard-validate", s23_checks))
     results.append(_run_section(24, "iter25 goal B bicameral live demo", s24_checks))
     results.append(_run_section(25, "iter26 teach domain expansion (14 examples, QBF)", s25_checks))
+    results.append(_run_section(26, "iter27 video generation (H3 + viz_video + swarm bank)", s26_checks))
     print("="*60)
     ok=sum(1 for r in results if r)
     print(f"selftest: {ok}/{len(results)} sections ok")

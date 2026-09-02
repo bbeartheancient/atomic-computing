@@ -69,6 +69,33 @@ class HostBridge:
                 stored = {keys[0]: w, keys[1]: z, keys[2]: y, keys[3]: x, "_h4": True, "_h4_keys": keys}
             except Exception:
                 pass
+        # iter 27: frame-blob round-trip. A "frame" entry is RGBA bytes
+        # (H3 output). The bridge stores it verbatim, then a viz_video
+        # sink (or its renderer) reads it off the bus. We tag the entry
+        # so downstream consumers know it's a frame, not a scalar dict.
+        if "frame" in stored and isinstance(stored["frame"], (bytes, bytearray)):
+            stored["frame"] = bytes(stored["frame"])
+            stored["_frame"] = True
+            # also surface the W (log-alpha) and X/Y/Z (linear RGB)
+            # channel decoder so consumers can sample a single channel
+            # without re-decoding the whole frame.
+            try:
+                import math as _m
+                # 4 bytes from the end -> (a, r, g, b) sample
+                if len(stored["frame"]) >= 4:
+                    j = len(stored["frame"]) - 4
+                    a_raw = stored["frame"][j + 3]
+                    r_raw = stored["frame"][j]
+                    g_raw = stored["frame"][j + 1]
+                    b_raw = stored["frame"][j + 2]
+                    a_log = _m.log(max(1, a_raw))
+                    w, z, y, x = h4_gate((a_log, float(b_raw), float(g_raw), float(r_raw)))
+                    stored["_w"] = w  # log-alpha (amplitude)
+                    stored["_x"] = x  # linear red
+                    stored["_y"] = y  # linear green
+                    stored["_z"] = z  # linear blue
+            except Exception:
+                pass
         if len(self._q) >= self.capacity:
             self._q.popleft()
         self._q.append((arrival, stored))

@@ -153,3 +153,65 @@ class Swarm:
 
     def __repr__(self):
         return "Swarm(%d agents)" % len(self.agents)
+
+
+# -- iter 27: prompt bank + H4 consensus routing ---------------------------
+
+class PromptBank:
+    """A bank of prompts + an H4-consensus picker for the next prompt.
+
+    The bank is a list of strings (each entry is a "domain prompt");
+    `consensus_pick(prev_prompts, prev_results)` runs the H(4) gate over
+    the LAST 4 PREVIOUS PROMPTS (their hash-derived 4-tuple), the
+    W (consensus) channel maps to an index in the bank, and that
+    prompt is returned.
+
+    This is the cheap-active-params the H3 video pipeline taps: the
+    swarm's scalars drive which prompt H3 renders next. Same shape as
+    `Swarm.consensus()` but applied to text -> bank indices.
+    """
+
+    def __init__(self, prompts=None):
+        from .video import PROMPT_BANK_DEFAULT
+        self.prompts = list(prompts) if prompts is not None else list(PROMPT_BANK_DEFAULT)
+
+    def __len__(self):
+        return len(self.prompts)
+
+    def _h4_of_prompts(self, prev_prompts):
+        # hash each -> 4-tuple of float in [0, 1) -> H(4) gate
+        from .qbf import h4_gate
+        vals = []
+        for p in (prev_prompts or self.prompts)[:4]:
+            h = int(hashlib.sha256(str(p).encode("utf-8")).hexdigest()[:8], 16)
+            vals.append((h % 1000) / 1000.0)
+        while len(vals) < 4:
+            vals.append(0.0)
+        w, z, y, x = h4_gate(tuple(vals))
+        return w, z, y, x
+
+    def consensus_pick(self, prev_prompts=None, last_w=None):
+        """H4 consensus over previous prompts -> next bank index.
+
+        `last_w` (optional) overrides the W channel directly -- the
+        caller can supply a swarm's W-channel consensus value (e.g. the
+        outputs of 4 pulse_count agents) and skip the prompt hash
+        path. Both code paths map to the same bank index domain.
+        """
+        if not self.prompts:
+            return ""
+        if last_w is not None:
+            w = float(last_w)
+        else:
+            w, _, _, _ = self._h4_of_prompts(prev_prompts)
+        # W is a 4-tuple sum of 4 values in [0, 4); normalize to [0, 1)
+        norm = (w % 4.0) / 4.0
+        idx = int(norm * len(self.prompts)) % len(self.prompts)
+        return self.prompts[idx]
+
+    def w_energy(self, prev_prompts=None):
+        """W energy fraction of the 4-tuple gate (the CORE keystone's
+        ~0.61 dominance metric)."""
+        w, z, y, x = self._h4_of_prompts(prev_prompts)
+        e = w * w + z * z + y * y + x * x
+        return (w * w / e) if e > 0 else 0.0

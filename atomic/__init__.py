@@ -21,7 +21,7 @@ from .trace import FrameEntry, FlowTrace, replay, replay_events, latency_histogr
 from .qbf import (QbfFile, QbfError, RAW, JSON, H4, FLAG_CHECKSUM, FLAG_H4,
                    h4_gate, h4_inverse, h4_encode, h4_decode)
 from .qbfstore import QbfTraceStore, open_trace_store, close_all
-from .swarm import Agent, Swarm, SwarmResult
+from .swarm import Agent, Swarm, SwarmResult, PromptBank
 from .decompose import decompose_python, decompose_eel2, decompose_expr, DecomposeError
 from .teach import (TeacherRegistry, REGISTRY, register_example, match,
                      from_description, domain_vocab, DOMAINS, KEYWORDS_BY_DOMAIN,
@@ -31,6 +31,8 @@ from .bridge import (HostBridge, BicameralPipeline, BicameralResult,
                      h4_row_cosine, row_cos_gate, h4_streaming_metrics,
                      latency_histogram, bridge_benchmark)
 from .demo import swarm_evolve_teach_demo
+from .video import (H3Client, H3Stub, H3File, H3Source, H3Session, H3Frame,
+                    H3Error, PROMPT_BANK_DEFAULT)
 from .context import (is_available as zg_available, zg_version, query as zg_query,
                       query_rg as zg_query_rg, status as zg_status, assert_retrieval,
                       CANONICAL_QUERIES)
@@ -46,7 +48,7 @@ __all__ = ["Bus", "Node", "Port", "Wire", "Engine", "ATOMS", "Atom",
                 "FLAG_CHECKSUM", "FLAG_H4",
                 "h4_gate", "h4_inverse", "h4_encode", "h4_decode",
                 "QbfTraceStore", "open_trace_store", "close_all",
-                "Agent", "Swarm", "SwarmResult",
+                "Agent", "Swarm", "SwarmResult", "PromptBank",
                 "decompose_python", "decompose_eel2", "decompose_expr", "DecomposeError",
                 "TeacherRegistry", "REGISTRY", "register_example", "match",
                 "from_description", "domain_vocab", "DOMAINS", "KEYWORDS_BY_DOMAIN",
@@ -56,4 +58,6 @@ __all__ = ["Bus", "Node", "Port", "Wire", "Engine", "ATOMS", "Atom",
                 "latency_histogram", "bridge_benchmark",
                 "swarm_evolve_teach_demo",
                 "zg_available", "zg_version", "zg_query", "zg_query_rg", "zg_status",
-                "assert_retrieval", "CANONICAL_QUERIES"]
+                "assert_retrieval", "CANONICAL_QUERIES",
+                "H3Client", "H3Stub", "H3File", "H3Source",
+                "H3Session", "H3Frame", "H3Error", "PROMPT_BANK_DEFAULT"]

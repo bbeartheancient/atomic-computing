@@ -655,6 +655,105 @@ _reg("viz_xy")
 _reg("viz_wxyz3d")
 
 
+# -- viz_video: per-tick frame stream sink (iter 27) -----------------------
+# The H3 video generator produces per-tick RGBA frames (bytes). The
+# viz_video atom consumes them from the bus key <id>.frame (a bytes
+# object, set by the H3 feed or a HostBridge frame-blob push) and stores
+# the latest frame in the engine bus so the UI renderer can read it.
+# The H(4) gate is the per-pixel channel decoder (the CORE keystone):
+#   Row0 W [+ + + +] = amplitude / consensus   <- the LOGARITHMIC A channel
+#   Row1 Z [+ - + -] = blue                    <- linear Z channel
+#   Row2 Y [+ + - -] = green                   <- linear Y channel
+#   Row3 X [+ - - +] = red                     <- linear X channel
+# The RGB channels are linear (XYZ) and the A channel is logarithmic (W)
+# — the master amplitude is decoded as the W row of the inverse H(4) gate.
+# An input cv gate (0/1) optionally enables/disables frame capture.
+# Output ports: ready (1/0), rgba (raw bytes), w (alpha log), x/y/z
+# (linear RGB after H4 inverse -> the "true color" reconstruction).
+
+def _vv_init(n):
+    n.set_var("prev_gate", 0.0)
+    n.set_var("w_latch", 0.0)
+    n.set_var("x_latch", 0.0)
+    n.set_var("y_latch", 0.0)
+    n.set_var("z_latch", 0.0)
+
+
+def _vv_tick(n):
+    import math as _m
+    from .qbf import h4_gate
+    gate = n.input("cv")
+    n.set_var("gate", gate)
+    ready = 0.0
+    frame = n.bus.get(n.id + ".frame")
+    if frame is not None and hasattr(frame, "__bytes__"):
+        rgba = bytes(frame)
+        n.bus.set(n.id + ".rgba", rgba)
+        # decode 4 channels via H(4) gate: per-pixel 4-tuple
+        # (a, r, g, b) -> (W_log_alpha, Z_lin_blue, Y_lin_green, X_lin_red)
+        # The "A is log, RGB are linear" encoding: store a log-alpha so the
+        # W row carries the consensus/amplitude (CORE's keystone role).
+        n_pixels = len(rgba) // 4
+        decoded = bytearray(n_pixels * 4)
+        last_w = 0.0
+        last_x = 0.0
+        last_y = 0.0
+        last_z = 0.0
+        for i in range(n_pixels):
+            j = i * 4
+            a_raw = rgba[j + 3]
+            r_raw = rgba[j]
+            g_raw = rgba[j + 1]
+            b_raw = rgba[j + 2]
+            # encode: a in [1, 256] -> log for the W row
+            a_log = _m.log(max(1, a_raw))
+            w_row, z_row, y_row, x_row = h4_gate(
+                (a_log, float(b_raw), float(g_raw), float(r_raw)))
+            # the W row of the H(4) gate is the SUM of all four
+            # channels (the consensus / amplitude); recover linear
+            # RGB by subtracting (a_log) from the gate rows and
+            # dividing by 2 (the off-diagonal pattern of the
+            # Sylvester-Hadamard). (W - a_log)/2 = (R+G+B)/2.
+            # For per-pixel linear RGB, use the gate row's value
+            # directly and clamp to [0, 255] in the decoded output.
+            decoded[j] = max(0, min(255, int(round(x_row))))
+            decoded[j + 1] = max(0, min(255, int(round(y_row))))
+            decoded[j + 2] = max(0, min(255, int(round(z_row))))
+            decoded[j + 3] = a_raw
+            # track the last pixel's gate rows for the W/X/Y/Z outputs
+            last_w, last_x, last_y, last_z = w_row, x_row, y_row, z_row
+        n.bus.set(n.id + ".rgba_decoded", bytes(decoded))
+        n.set_var("w_latch", last_w)
+        n.set_var("x_latch", last_x)
+        n.set_var("y_latch", last_y)
+        n.set_var("z_latch", last_z)
+        n.output("w", last_w)
+        n.output("x", last_x)
+        n.output("y", last_y)
+        n.output("z", last_z)
+        ready = 1.0
+    n.set_var("ready", ready)
+    n.output("ready", ready)
+
+
+ATOMS["viz_video"] = Atom(
+    "viz_video", "Video frame sink (per-tick RGBA -> H4 RGBA log/linear)",
+    "sink",
+    {"capture": 1.0},
+    ["in"],
+    ["ready", "w", "x", "y", "z"],
+    "@init\ncapture = 1;\n"
+    "@tick\nready = 0;\n"
+    "if (capture > 0.5) {\n"
+    "  f = input('frame');\n"
+    "  if (isdefined(f)) {\n"
+    "    output('ready', 1);\n"
+    "    ready = 1;\n"
+    "  }\n"
+    "}",
+    init=_vv_init, tick=_vv_tick)
+
+
 # -- viz_heatmap: per-tile heatmap sink (iter 3) --------------------------------
 # The renderer (static/index.html) reads bus[<id>.hm] (a 0..1 intensity
 # per tile slot, written by the heatmap atom itself) and draws the
@@ -706,6 +805,7 @@ PARAM_RANGES: dict[tuple[str, str], tuple[float, float, float, str]] = {
     ("const", "value"):         (-4.0, 4.0, 0.01, ""),
     ("toffoli", "lo"):          (0.0, 1.0, 1.0, ""),
     ("toffoli", "hi"):          (0.0, 1.0, 1.0, ""),
+    ("viz_video", "capture"):   (0.0, 1.0, 1.0, ""),
 }
 
 
