@@ -45,7 +45,15 @@ import os
 import subprocess
 import tempfile
 
-_FABRIC = os.path.expanduser("~/M1Multitronic/fabric")
+def _fabric_root():
+    # standalone: prefer vendored ATOMIC-PC/fabric, fallback to sibling
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for cand in (os.path.join(here, "fabric"), os.path.expanduser("~/M1Multitronic/fabric")):
+        if os.path.exists(os.path.join(cand, "web", "jsfx.js")):
+            return cand
+    return os.path.expanduser("~/M1Multitronic/fabric")
+
+_FABRIC = _fabric_root()
 JSFX = os.path.join(_FABRIC, "web", "jsfx.js")
 FIXTURE = os.path.join(_FABRIC, "tests", "microfx_modules.json")
 NODE = "node"

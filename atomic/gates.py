@@ -36,12 +36,34 @@ from . import dsp
 from .jsnum import cond_truthy, js_falsy, js_number, js_or0
 
 
+def _vendor_roots():
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    roots = []
+    # standalone: ATOMIC-PC/fabric vendored (preferred)
+    if os.path.exists(os.path.join(here, "fabric", "microfx.py")):
+        roots.append(here)
+    # fallback sibling
+    sib = os.path.expanduser("~/M1Multitronic")
+    if sib not in roots:
+        roots.append(sib)
+    return roots
+
 def _fabric_modules():
     try:
         import fabric.microfx as mf
     except ImportError:
+        for r in _vendor_roots():
+            if r not in sys.path:
+                sys.path.insert(0, r)
+            try:
+                import fabric.microfx as mf2
+                return mf2.MODULES
+            except ImportError:
+                continue
+        # last resort: original sibling
         sys.path.insert(0, os.path.expanduser(os.path.join("~", "M1Multitronic")))
         import fabric.microfx as mf
+        return mf.MODULES
     return mf.MODULES
 
 
@@ -54,8 +76,17 @@ def _fabric_gate_tables():
     try:
         import fabric.microfx as mf
     except ImportError:
+        for r in _vendor_roots():
+            if r not in sys.path:
+                sys.path.insert(0, r)
+            try:
+                import fabric.microfx as mf2
+                return mf2._GATES, mf2._QGATES
+            except ImportError:
+                continue
         sys.path.insert(0, os.path.expanduser(os.path.join("~", "M1Multitronic")))
         import fabric.microfx as mf
+        return mf._GATES, mf._QGATES
     return mf._GATES, mf._QGATES
 
 
@@ -342,14 +373,18 @@ _reg("hadamard4", init=_h4_init, tick=_h4_tick)
 # here: it reads MODULES, where the gates no longer exist.
 
 def _fixture():
-    p = os.path.expanduser(
-        os.path.join("~", "M1Multitronic", "fabric", "tests",
-                     "microfx_modules.json"))
-    try:
-        with open(p) as f:
-            return json.load(f)
-    except Exception:
-        return {"source": {}, "params": {}}
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cands = [
+        os.path.join(here, "fabric", "tests", "microfx_modules.json"),
+        os.path.expanduser(os.path.join("~", "M1Multitronic", "fabric", "tests", "microfx_modules.json")),
+    ]
+    for p in cands:
+        try:
+            with open(p) as f:
+                return json.load(f)
+        except Exception:
+            continue
+    return {"source": {}, "params": {}}
 
 
 _FIX = _fixture()

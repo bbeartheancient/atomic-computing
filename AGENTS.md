@@ -19,10 +19,7 @@ store (goal 6; the operator's "middle" format: working blobs, no
 50 MB cap, H(4) gates optional). "Done" = the spec stays coherent
 AND the harness stays green (170 tests, 16 sections, `ATOMIC-PC-STATE.md` tracks
 per-iteration state; iter 17 re-verified 16/16 + 170 passed + 359 fabric + hoa selftest).
-Still: no local git yet; the canonical remote
-`github.com/bbeartheancient/atomic-computing` exists but is EMPTY.
-Zero sibling edits: the harness IMPORTS the siblings (jsfx.js,
-microfx, hoa64) and never vendors or modifies them.
+Still: git remote `github.com/bbeartheancient/atomic-computing` is live on `main` (first push e9cf4f1, 43 files); vendored `fabric/` (2.0 MB, jsfx + microfx + fixture) and `hoa64/` (8.8 MB, Hadamard spatial lib) are now in-repo so a fresh clone is standalone (no `~/M1Multitronic` or `~/hoa64` required). Third-party siblings (`~/Rack`, `~/WebPd`, `~/circuitjs1`, `~/memvid`) remain external and are not vendored.
 
 PRIME DIRECTIVE: IF A BETTER WAY WOULD WORK, SUGGEST IT!
 
@@ -87,13 +84,12 @@ self-improvement loops (7) ->
 decompose any language/compiled code into atomic functions (8) -> bicameral
 two-GPU split (9) -> cheap active params => parallel agent swarms (10).
 
-Module roles in the verified harness (`~/M1Multitronic/fabric/`):
+Module roles in the verified harness (`~/M1Multitronic/fabric/` — vendored here as `fabric/`):
 `web/jsfx.js` = EEL2/JSFX runtime + host bridge; `microfx.py` = module
 catalog + ngram verbs; `atomic_program.py` = block/wire IR + compiler;
 `dma_trace.py` = flow observer; `main.py` = FastAPI (:18093).
 
-Module roles in the LOCAL harness (this dir, `~/ATOMIC-PC/atomic/`,
-imported — never vendored — from the siblings): `bus.py` = the rock-
+Module roles in the LOCAL harness (this dir, `~/ATOMIC-PC/atomic/`): `bus.py` = the rock-
 solid signal store + per-node host bridge; `engine.py` = the Python
 twin of `evaluatePatch` (the pinned per-tick loop, batch `run()` +
 live `tick()` with per-tick feeds); `gates.py` = the unified atom
@@ -124,10 +120,8 @@ The engine takes an optional `trace=` observer: pure read-only
   single source of truth for the gate list, H(4) row layout, and display-tile
   matrix. Change semantics THERE first, then in code.
 - Git remote `https://github.com/bbeartheancient/atomic-computing` (description
-  "atomizing data processes into keyword gates") exists but is EMPTY. This
-  local dir is NOT a git repo yet.
-- Sibling trees to import (never vendor): `~/M1Multitronic`, `~/hoa64`,
-  `~/memvid`, `~/Rack`, `~/WebPd`, `~/circuitjs1`.
+  "atomizing data processes into keyword gates") is live on `main` (first push e9cf4f1); vendored `fabric/` and `hoa64/` make a fresh clone standalone.
+- Sibling trees: vendored `fabric/` (from `~/M1Multitronic/fabric`, 2.0 MB) and `hoa64/` (from `~/hoa64`, 8.8 MB) are in-repo; third-party siblings (`~/Rack`, `~/WebPd`, `~/circuitjs1`, `~/memvid`) remain external and are not vendored.
 - Interpreters (verified present): `~/runtime/.venv/bin/python` (torch +
   transformers + memvid_sdk), `~/M1Multitronic/.venv-fabric/bin/python`,
   `~/hoa64-venv/bin/python`. CAUTION: the `~/miniforge3/envs/sage-dev` that
@@ -136,7 +130,7 @@ The engine takes an optional `trace=` observer: pure read-only
   PLE state: `~/.runtime/ngram_shards/`. node v26 for JSFX.
 
 ## Decision frames
-- Import sibling trees; never vendor them.
+- Import sibling trees; vendored `fabric/` and `hoa64/` are the exception for standalone (others never vendored).
 - Live streams are the only currency — never design a batch API. A node is a
   stream->stream transform.
 - Do not break the node rule (<=1 input on function nodes, N outputs, cables
