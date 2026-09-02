@@ -34,7 +34,8 @@ from .demo import swarm_evolve_teach_demo
 from .video import (H3Client, H3Stub, H3File, H3Source, H3Session, H3Frame,
                      H3Error, PROMPT_BANK_DEFAULT)
 from .jellyfin import (JFinExporter, JFinM3U, JFinChannel, JFinScheduler,
-                        make_default_channels, DEFAULT_LIVETV_DIR, DEFAULT_HLS_DIR)
+                        make_default_channels, DEFAULT_LIVETV_DIR, DEFAULT_HLS_DIR,
+                        h4_gate as jfin_h4_gate)
 from .gates import register_jfin_scheduler
 from .context import (is_available as zg_available, zg_version, query as zg_query,
                       query_rg as zg_query_rg, status as zg_status, assert_retrieval,

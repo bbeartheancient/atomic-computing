@@ -1978,3 +1978,99 @@ python -m examples.jfin_channel_rotation
 ```
 Result: selftest 27/27, pytest 245 passed, jfin_channel_rotation demo OK.
 No sibling changes (only ~/ATOMIC-PC edited).
+
+───────────────────────────────────────────────────────────────────
+ITER 29 — Jellyfin/HDHomeRun integration: DASH muxer, mock ffmpeg,
+keyframe-on-trig, seeded rotation determinism, recursive group-title
+M3U emission, Swarm H4 -> JFinScheduler consensus_pick, end-to-end
+viz_video -> jfin_live_export program.
+
+Goal: fill the iter28 gaps (no DASH, no keyframe force on trig, no
+recursive group-title emission, no M3U stdin redirect, no inline
+ffmpeg test, no Swarm H4 -> channel routing, no end-to-end program).
+Make every rotation mode bit-deterministic via rotation_seed.
+
+Changes:
+  * `atomic/jellyfin.py` (extended):
+    JFinExporter now has `muxer="hls"` (default) or `"dash"` (--f dash,
+    emits .mpd + segment timeline + adaptation sets) and `mock=True`
+    (no real ffmpeg; counts frames + keyframes in memory, writes a
+    placeholder manifest). `force_keyframe()` increments a keyframe
+    counter (mock) or flushes the stdin pipe (real ffmpeg). The push()
+    API gained a `force_key=False` kwarg.
+
+    JFinM3U gained `write_to_stdin()` (redirect M3U bytes to a file-
+    like stdin_fp; returns the rendered bytes), `group_titles()`
+    (sorted unique group-title values), and `write_recursive_groups()`
+    (one M3U per group-title + a root M3U with #EXTGRP references,
+    so Jellyfin's Live TV group browse mirrors the H4 organization).
+    JFinChannel.m3u_line() gained an optional `group_path` argument
+    for hierarchical group-title emission (e.g. "HD/ATOMIC") and
+    always emits channel-id.
+
+    JFinScheduler gained `rotation_seed` (default 0; bit-deterministic
+    for "random" mode), a new mode `seeded_round_robin` (cursor offset
+    by the seed), and `consensus_pick(programs, last_w)` (H4 W-channel
+    mod len(programs) -> next program -- the live swarm hook).
+    `force_keyframe(channel_id)` proxies to the exporter.
+    stats() now includes keyframes + muxer + mock + mpd path.
+
+    New helper `_h4_consensus_w(items, seed)` (module-private):
+    hashes each program -> float in [0,1) -> H(4) gate -> returns W
+    row. Used by `rotate(mode="h4_consensus")` and `consensus_pick()`.
+
+  * `atomic/gates.py`: jfin_live_export tick now reads `prev_trig`
+    state and forces a keyframe on rising edge of `trig` input (the
+    channel-switch trigger). New output port `keyframes` exposes the
+    counter on the bus. _jle_init() initializes prev_trig + keyframes.
+
+  * `atomic/ui/programs.py`: `jfin_export_demo` program
+    (const -> viz_video -> jfin_live_export) added to _REGISTRY.
+    The server's lifespan auto-registers all programs, so
+    GET /api/programs and /api/batch/jfin_export_demo Just Work.
+
+  * `tests/test_iter29.py` (new, 19 tests):
+    TestJFinExporterMock (4): mock mode + frame size + DASH mock +
+    rising-edge keyframe.
+    TestJFinSchedulerSeeded (6): rotation_seed determinism (3 seeds),
+    seeded_round_robin mode determinism, consensus_pick indexing,
+    consensus_pick empty, force_keyframe via scheduler, stats
+    keyframes/muxer.
+    TestJFinM3URecursive (5): group_titles, write_recursive_groups,
+    write_to_stdin, channel-id, group_path.
+    TestJFinLiveExportKeyframe (1): trig -> keyframe via Engine run.
+    TestSwarmJFinIntegration (1): Swarm.consensus ->
+    JFinScheduler.consensus_pick (W=10 -> idx=2).
+    TestEndToEndProgram (2): viz_video + jfin_live_export pipeline
+    (with and without frame on jle.in bus).
+    All 19 pass.
+
+  * `examples/jfin_consensus_routing.py` (new): 4-agent swarm ->
+    H4 W consensus -> PromptBank -> JFinScheduler consensus_pick ->
+    4-channel mock rotation (round_robin / random / h4_consensus /
+    seeded_round_robin); seed=42 determinism check; DASH muxer +
+    keyframe force; recursive group-title M3U emission. End-to-end
+    demo.
+
+  * `atomic/selftest.py` section 28 (13 checks): mock mode + keyframe
+    counter, DASH muxer (.mpd path), rotation_seed determinism (3
+    seeds), seeded_round_robin mode determinism, consensus_pick
+    indexing, M3U write_recursive_groups + group_titles,
+    write_to_stdin stdin redirect, m3u_line channel-id + group_path,
+    jfin_live_export trig -> keyframe wire signal, jfin_export_demo
+    program registered + compiles, Swarm H4 -> consensus_pick routing,
+    viz_video -> jfin_live_export end-to-end program, stats exposes
+    keyframes + muxer. All 13 pass.
+
+Verification:
+```
+cd ~/ATOMIC-PC && python -m atomic.selftest
+  -> 28/28 sections ok (~6s)
+cd ~/ATOMIC-PC && python -m pytest tests -q
+  -> 264 passed (~11s, +19 iter29 net)
+python -m examples.jfin_consensus_routing
+  -> [4-agent swarm -> W=10 -> saturn rings, 4 rotation modes,
+       seeded_round_robin determinism OK, DASH .mpd, recursive M3U]
+```
+Result: selftest 28/28, pytest 264 passed, jfin_consensus_routing demo OK.
+No sibling changes (only ~/ATOMIC-PC edited).

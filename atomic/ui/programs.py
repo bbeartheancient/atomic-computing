@@ -138,6 +138,21 @@ def _heatmap_live() -> Program:
     )
 
 
+def _jfin_export_demo() -> Program:
+    return Program(
+        "jfin_export_demo",
+        description="const -> viz_video -> jfin_live_export (H3 -> HLS/DASH -> Jellyfin)",
+        blocks=[
+            Block("src", "const", {"value": 1}),
+            Block("vv", "viz_video"),
+            Block("jle", "jfin_live_export",
+                  {"scheduler_key": "atomic-01", "width": 64, "height": 64}),
+        ],
+        wires=[Wire("src.cv", "vv.in"),
+               Wire("src.cv", "jle.in")],
+    )
+
+
 _REGISTRY: dict[str, Callable[[], Program]] = {
     "clock_counter": _clock_counter,
     "gated_clock_counter": _gated_clock_counter,
@@ -147,6 +162,7 @@ _REGISTRY: dict[str, Callable[[], Program]] = {
     "wxyz3d_demo": _wxyz3d_demo,
     "heatmap_demo": _heatmap_demo,
     "heatmap_live": _heatmap_live,
+    "jfin_export_demo": _jfin_export_demo,
 }
 
 

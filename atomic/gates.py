@@ -812,6 +812,8 @@ def _jle_init(n):
     n.set_var("active_gate", 0.0)
     n.set_var("frames_pushed", 0.0)
     n.set_var("prev_gate", 0.0)
+    n.set_var("prev_trig", 0.0)
+    n.set_var("keyframes", 0.0)
 
 
 def _jle_tick(n):
@@ -822,7 +824,13 @@ def _jle_tick(n):
 
     active = 0.0
     frames_pushed = n.read("frames_pushed")
+    keyframes = n.read("keyframes")
     scheduler_key = n.params.get("scheduler_key", "")
+
+    # rising-edge on `trig` -> force a keyframe on the next frame
+    prev_trig = n.read("prev_trig")
+    force_key = (trig > 0.5) and (prev_trig <= 0.5)
+    n.set_var("prev_trig", trig)
 
     if gate > 0.5:
         frame = n.bus.get(n.id + ".frame")
@@ -832,16 +840,20 @@ def _jle_tick(n):
             h = int(n.params.get("height", 360))
             sched = _GLOBAL_JFIN_SCHEDULER
             if sched is not None and scheduler_key:
-                ok = sched.push_frame(scheduler_key, rgba, width=w, height=h)
+                ok = sched.push_frame(scheduler_key, rgba, width=w, height=h,
+                                      force_key=force_key)
                 if ok:
                     frames_pushed = frames_pushed + 1.0
                     active = 1.0
+                    if force_key:
+                        keyframes = keyframes + 1.0
 
-    n.set_var("prev_gate", gate)
     n.set_var("active_gate", active)
     n.set_var("frames_pushed", frames_pushed)
+    n.set_var("keyframes", keyframes)
     n.output("active", active)
     n.output("frames_pushed", frames_pushed)
+    n.output("keyframes", keyframes)
 
 
 ATOMS["jfin_live_export"] = Atom(
@@ -850,9 +862,9 @@ ATOMS["jfin_live_export"] = Atom(
     "sink",
     {"scheduler_key": "", "width": 640, "height": 360},
     ["in", "trig"],
-    ["active", "frames_pushed"],
+    ["active", "frames_pushed", "keyframes"],
     "@init\nscheduler_key = '';\nwidth = 640; height = 360;\n"
-    "@tick\nactive = 0;\nframes_pushed = 0;\n",
+    "@tick\nactive = 0;\nframes_pushed = 0; keyframes = 0;\n",
     init=_jle_init, tick=_jle_tick, multi_in=True)
 
 

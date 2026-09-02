@@ -47,6 +47,8 @@ import threading
 import time
 from typing import Optional
 
+from .qbf import h4_gate
+
 __all__ = [
     "JFinExporter",
     "JFinM3U",
@@ -54,12 +56,33 @@ __all__ = [
     "JFinScheduler",
     "DEFAULT_LIVETV_DIR",
     "DEFAULT_HLS_DIR",
+    "h4_gate",
+    "_h4_consensus_w",
 ]
 
 
 DEFAULT_LIVETV_DIR = "/etc/jellyfin/livetv"
 DEFAULT_HLS_DIR = "/var/lib/jellyfin/livetv"
 DEFAULT_FFMPEG_BIN = "ffmpeg"
+
+
+def _h4_consensus_w(items: list[str], seed: int) -> float:
+    """Compute the H4 W-channel consensus over up to 4 items.
+
+    Hashes each item -> float in [0, 1) -> H(4) gate -> returns the W
+    row (the sum / consensus value). Used by JFinScheduler.h4_consensus
+    mode and consensus_pick().
+    """
+    vals = []
+    for item in items[:4]:
+        h = int(hashlib.sha256(
+            str(item).encode("utf-8") + str(seed).encode("utf-8")
+        ).hexdigest()[:8], 16)
+        vals.append((h % 1000) / 1000.0)
+    while len(vals) < 4:
+        vals.append(0.0)
+    w, _, _, _ = h4_gate(tuple(vals))
+    return w
 
 
 class JFinError(RuntimeError):
@@ -91,9 +114,12 @@ class JFinChannel:
         self.group = str(group)
         self.number = int(number)
 
-    def m3u_line(self) -> str:
+    def m3u_line(self, group_path: str = "") -> str:
+        g = self.group
+        if group_path:
+            g = f"{group_path}/{self.group}"
         f = f'#EXTINF:-1 tvg-id="{self.id}" tvg-name="{self.name}" '
-        f += f'tvg-logo="{self.logo_url}" group-title="{self.group}" '
+        f += f'tvg-logo="{self.logo_url}" group-title="{g}" '
         f += f'channel-id="{self.id}",{self.name}\n'
         f += f'{self.m3u_url}\n'
         return f
@@ -110,20 +136,34 @@ class JFinExporter:
     in an HLS playlist. Jellyfin's Live TV DVR picks up the M3U playlist
     and surfaces the channel.
 
-    The ffmpeg pipeline:
+    The ffmpeg pipeline (HLS mode):
       raw RGBA (pipe) -> format=rgba -> scale -> x264 + aac -> HLS
+
+    For DASH, set muxer="dash": ffmpeg emits a .mpd manifest + segments
+    suitable for Jellyfin's DASH Live ingest (the same channel can be
+    served by either HLS or DASH; JFinM3U emits the right URL).
+
+    Set mock=True to disable the real ffmpeg subprocess and just count
+    frames in memory (useful for tests where ffmpeg is absent or
+    expensive to spawn). push() returns True, frame_count increments,
+    running stays True. The HLS .m3u8 / DASH .mpd manifest files are
+    NOT created in mock mode -- only a `mock.m3u8` placeholder is
+    written so playlist_path() still resolves.
 
     Attributes:
       channel     JFinChannel this exporter publishes
       hls_dir     Directory where .m3u8 + .ts segments land
       ffmpeg_bin  Path to ffmpeg binary
-      running     bool: True while the ffmpeg subprocess is alive
+      running     bool: True while the ffmpeg subprocess is alive (or mock)
       frame_count Total frames pushed
+      keyframes   Total keyframes forced via force_keyframe() / trig
+      muxer       "hls" (default) or "dash"
+      mock        bool: True if running in mock mode (no real ffmpeg)
     """
 
     def __init__(self, channel: JFinChannel, hls_dir=None, ffmpeg_bin=None,
                  width=640, height=360, fps=30, segment_duration=2,
-                 bitrate="1000k", audio=True):
+                 bitrate="1000k", audio=True, muxer="hls", mock=False):
         self.channel = channel
         self.hls_dir = str(hls_dir) if hls_dir else tempfile.mkdtemp(prefix="jfin_hls_")
         self.ffmpeg_bin = str(ffmpeg_bin) if ffmpeg_bin else DEFAULT_FFMPEG_BIN
@@ -133,17 +173,56 @@ class JFinExporter:
         self.segment_duration = int(segment_duration)
         self.bitrate = str(bitrate)
         self.audio = bool(audio)
+        self.muxer = str(muxer).lower()
+        self.mock = bool(mock)
 
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
         self.running = False
         self.frame_count = 0
+        self.keyframes = 0
 
-        self._start_ffmpeg()
+        if self.mock:
+            self._start_mock()
+        else:
+            self._start_ffmpeg()
+
+    def _start_mock(self):
+        os.makedirs(self.hls_dir, exist_ok=True)
+        # write a placeholder manifest so playlist_path() / mpd_path() resolve
+        ext = "mpd" if self.muxer == "dash" else "m3u8"
+        placeholder = os.path.join(self.hls_dir, f"live.{ext}")
+        try:
+            with open(placeholder, "w") as f:
+                f.write("# mock manifest\n")
+        except OSError:
+            pass
+        self.running = True
 
     def _start_ffmpeg(self):
         os.makedirs(self.hls_dir, exist_ok=True)
-        playlist = os.path.join(self.hls_dir, "live.m3u8")
+        if self.muxer == "dash":
+            playlist = os.path.join(self.hls_dir, "live.mpd")
+            out_args = [
+                "-f", "dash",
+                "-seg_duration", str(self.segment_duration),
+                "-window_size", "6",
+                "-extra_window_size", "2",
+                "-use_template", "1",
+                "-use_timeline", "1",
+                "-adaptation_sets", "id=0,streams=v id=1,streams=a",
+                playlist,
+            ]
+        else:
+            playlist = os.path.join(self.hls_dir, "live.m3u8")
+            out_args = [
+                "-f", "hls",
+                "-hls_time", str(self.segment_duration),
+                "-hls_list_size", "6",
+                "-hls_flags", "delete_segments+independent_segments",
+                "-hls_keyinfo_file", os.path.join(self.hls_dir, "key.info"),
+                playlist,
+            ]
 
         cmd = [
             self.ffmpeg_bin,
@@ -156,13 +235,8 @@ class JFinExporter:
             "-preset", "ultrafast",
             "-b:v", self.bitrate,
             "-pix_fmt", "yuv420p",
-            "-f", "hls",
-            "-hls_time", str(self.segment_duration),
-            "-hls_list_size", "6",
-            "-hls_flags", "delete_segments",
-            "-hls_dir", self.hls_dir,
-            playlist,
-        ]
+            "-force_key_frames", f"expr:gte(n,n_forced*{max(1, self.fps)})",
+        ] + out_args
 
         if self.audio:
             cmd[5:5] = [
@@ -186,14 +260,46 @@ class JFinExporter:
 
         self.running = True
 
-    def push(self, frame: bytes, width=None, height=None) -> bool:
+    def force_keyframe(self):
+        """Force a keyframe on the next pushed frame.
+
+        In mock mode, increments the keyframes counter.
+        In real ffmpeg mode, flushes the stdin so the next frame's
+        segment boundary aligns with the keyframe flag.
+        """
+        with self._lock:
+            self.keyframes += 1
+            if self._proc is not None:
+                try:
+                    self._proc.stdin.flush()
+                except (BrokenPipeError, OSError):
+                    pass
+
+    def push(self, frame: bytes, width=None, height=None,
+             force_key=False) -> bool:
         """Push one RGBA frame (bytes) to the ffmpeg pipeline.
 
         Returns True on success, False if the pipeline is not running.
         Raises JFinError if the frame size is wrong or the pipe is broken.
+        If force_key=True, a keyframe boundary is forced before the frame.
         """
         with self._lock:
-            if not self.running or self._proc is None:
+            if not self.running:
+                return False
+            if self.mock:
+                w = int(width) if width else self.width
+                h = int(height) if height else self.height
+                expected = w * h * 4
+                if len(frame) != expected:
+                    raise JFinError(
+                        f"frame size mismatch: got {len(frame)} bytes, "
+                        f"expected {expected} ({w}x{h} RGBA)"
+                    )
+                if force_key:
+                    self.keyframes += 1
+                self.frame_count += 1
+                return True
+            if self._proc is None:
                 return False
             if self._proc.poll() is not None:
                 self.running = False
@@ -207,6 +313,10 @@ class JFinExporter:
                     f"expected {expected} ({w}x{h} RGBA)"
                 )
             try:
+                if force_key:
+                    self._proc.stdin.write(b"K")
+                    self._proc.stdin.flush()
+                    self.keyframes += 1
                 self._proc.stdin.write(frame)
                 self._proc.stdin.flush()
                 self.frame_count += 1
@@ -223,21 +333,31 @@ class JFinExporter:
                     self._proc.stdin.close()
                 except OSError:
                     pass
-                self._proc.wait(timeout=5.0)
+                try:
+                    self._proc.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    self._proc.kill()
                 self._proc = None
             self.running = False
 
     @property
     def m3u_url(self) -> str:
-        playlist = os.path.join(self.hls_dir, "live.m3u8")
+        playlist = os.path.join(self.hls_dir, self.playlist_name())
         return f"file://{playlist}"
 
+    def playlist_name(self) -> str:
+        return "live.mpd" if self.muxer == "dash" else "live.m3u8"
+
     def playlist_path(self) -> str:
-        return os.path.join(self.hls_dir, "live.m3u8")
+        return os.path.join(self.hls_dir, self.playlist_name())
+
+    def mpd_path(self) -> str:
+        return os.path.join(self.hls_dir, "live.mpd")
 
     def __repr__(self):
         return (f"JFinExporter({self.channel.id!r}, "
-                f"hls_dir={self.hls_dir!r}, running={self.running})")
+                f"hls_dir={self.hls_dir!r}, running={self.running}, "
+                f"muxer={self.muxer!r}, mock={self.mock})")
 
     def __del__(self):
         self.stop()
@@ -252,6 +372,11 @@ class JFinM3U:
     HDHomeRun devices on the LAN can also serve M3U playlists directly
     via their HTTP interface; the M3U format is the same.
 
+    The "recursive group-title" emission (iter29) writes one M3U per
+    channel group (group-title="ATOMIC", "TV", etc.) plus a recursive
+    root M3U that #EXTGRP-references the group playlists -- this lets
+    Jellyfin's Live TV group browse mirror the H4 channel organization.
+
     Attributes:
       livetv_dir  Target directory for .m3u files
       channels    List of JFinChannel objects
@@ -264,8 +389,12 @@ class JFinM3U:
     def add_channel(self, channel: JFinChannel):
         self.channels.append(channel)
 
-    def write(self, filename="atomic.m3u") -> str:
+    def write(self, filename="atomic.m3u", fp=None) -> str:
         """Write the M3U playlist to livetv_dir/filename.
+
+        If `fp` is given, the M3U bytes are also written there (used by
+        write_to_stdin() to redirect emission to a process pipe or
+        in-memory buffer).
 
         Returns the full path written.
         """
@@ -276,7 +405,35 @@ class JFinM3U:
             lines.append(ch.m3u_line())
         with open(path, "w") as f:
             f.writelines(lines)
+        if fp is not None:
+            try:
+                fp.write("".join(lines).encode("utf-8"))
+                fp.flush()
+            except (AttributeError, OSError):
+                # fall back: caller wants a file-like object that supports .write()
+                fp.write("".join(lines))
+                fp.flush()
         return path
+
+    def write_to_stdin(self, filename="atomic.m3u", stdin_fp=None) -> bytes:
+        """Write the M3U bytes (returning them) AND optionally push them
+        to `stdin_fp` (a file-like object that supports .write/.flush --
+        typically subprocess.Popen.stdin).
+
+        If stdin_fp is None, the bytes are only returned.
+        Returns the rendered M3U bytes (always).
+        """
+        lines = ["#EXTM3U\n"]
+        for ch in self.channels:
+            lines.append(ch.m3u_line())
+        rendered = "".join(lines).encode("utf-8")
+        if stdin_fp is not None:
+            stdin_fp.write(rendered)
+            try:
+                stdin_fp.flush()
+            except (AttributeError, OSError):
+                pass
+        return rendered
 
     def write_all(self) -> list[str]:
         """Write one .m3u per channel (atomic-{id}.m3u)."""
@@ -286,6 +443,53 @@ class JFinM3U:
             path = self.write(f"atomic-{safe_id}.m3u")
             paths.append(path)
         return paths
+
+    def group_titles(self) -> list[str]:
+        """Sorted list of distinct group-title values across channels."""
+        seen = []
+        for ch in self.channels:
+            if ch.group and ch.group not in seen:
+                seen.append(ch.group)
+        return sorted(seen)
+
+    def write_recursive_groups(self) -> dict[str, str]:
+        """One M3U per group-title plus a root M3U that references them.
+
+        Returns a dict {group_title: m3u_path}; the root playlist is
+        written under "atomic-root.m3u" and its #EXTINF lines point at
+        the per-group files (so Jellyfin's tuner shows the group
+        hierarchy).
+
+        Per-group filename: atomic-group-<group_title>.m3u (sanitized).
+        """
+        out = {}
+        os.makedirs(self.livetv_dir, exist_ok=True)
+        groups: dict[str, list[JFinChannel]] = {}
+        for ch in self.channels:
+            groups.setdefault(ch.group or "ATOMIC", []).append(ch)
+
+        # per-group playlists
+        for g, channels in groups.items():
+            safe = g.replace("/", "_").replace("\\", "_").replace(" ", "_")
+            m3u = JFinM3U(livetv_dir=self.livetv_dir)
+            for c in channels:
+                m3u.add_channel(c)
+            path = m3u.write(f"atomic-group-{safe}.m3u")
+            out[g] = path
+
+        # root playlist: one stub entry per group, pointing at the group playlist
+        root_path = os.path.join(self.livetv_dir, "atomic-root.m3u")
+        with open(root_path, "w") as f:
+            f.write("#EXTM3U\n")
+            for g, p in out.items():
+                safe = g.replace("/", "_").replace("\\", "_").replace(" ", "_")
+                f.write(f'#EXTGRP:{g}\n')
+                # EXTINF placeholder for the group root, m3u_url points to playlist
+                f.write(f'#EXTINF:-1 tvg-id="group-{safe}" tvg-name="{g}" '
+                        f'group-title="GROUPS",{g}\n')
+                f.write(f"{p}\n")
+        out["__root__"] = root_path
+        return out
 
     @staticmethod
     def discover_hdhr() -> list[dict]:
@@ -343,23 +547,32 @@ class JFinScheduler:
     becomes a randomized multichannel universe. The scheduler tracks the
     mapping and exposes the current active channels.
 
+    `rotation_seed` (iter29) is the explicit seed for the "random" and
+    "h4_consensus" modes -- same seed -> same mapping. The default seed
+    is 0 (deterministic across runs). Setting `rotation_seed` and calling
+    rotate() in "random" or "h4_consensus" mode is bit-identical.
+
     Attributes:
-      exporters   Dict[channel_id, JFinExporter]
-      channels    Dict[channel_id, JFinChannel]
-      mappings    Dict[channel_id, str]  # channel_id -> program_name
+      exporters       Dict[channel_id, JFinExporter]
+      channels        Dict[channel_id, JFinChannel]
+      mappings        Dict[channel_id, str]  # channel_id -> program_name
+      rotation_seed   int -- RNG seed for rotate()
+      rotation_cursor int -- advance counter for round_robin
     """
 
-    def __init__(self):
+    def __init__(self, rotation_seed=0):
         self.exporters: dict[str, JFinExporter] = {}
         self.channels: dict[str, JFinChannel] = {}
         self.mappings: dict[str, str] = {}
         self._rotation_cursor = 0
-        self._rotation_seed = 0
+        self.rotation_seed = int(rotation_seed)
 
     def register_channel(self, channel: JFinChannel, hls_dir=None,
-                        width=640, height=360) -> JFinExporter:
+                        width=640, height=360, muxer="hls",
+                        mock=False) -> JFinExporter:
         """Create and register a new channel + exporter."""
-        ex = JFinExporter(channel, hls_dir=hls_dir, width=width, height=height)
+        ex = JFinExporter(channel, hls_dir=hls_dir, width=width, height=height,
+                          muxer=muxer, mock=mock)
         self.channels[channel.id] = channel
         self.exporters[channel.id] = ex
         return ex
@@ -368,12 +581,20 @@ class JFinScheduler:
         """Map a channel to an atomic program name."""
         self.mappings[channel_id] = program_name
 
-    def push_frame(self, channel_id: str, frame: bytes, width=None, height=None) -> bool:
+    def push_frame(self, channel_id: str, frame: bytes, width=None, height=None,
+                   force_key=False) -> bool:
         """Push one frame to a channel's exporter. Returns success bool."""
         ex = self.exporters.get(channel_id)
         if ex is None:
             return False
-        return ex.push(frame, width=width, height=height)
+        return ex.push(frame, width=width, height=height, force_key=force_key)
+
+    def force_keyframe(self, channel_id: str) -> bool:
+        ex = self.exporters.get(channel_id)
+        if ex is None:
+            return False
+        ex.force_keyframe()
+        return True
 
     def stop_channel(self, channel_id: str):
         ex = self.exporters.pop(channel_id, None)
@@ -392,9 +613,14 @@ class JFinScheduler:
         """Rotate which program maps to which channel.
 
         Modes:
-          round_robin  cursor advances one position per call
-          random       shuffled assignment using seeded RNG
-          h4_consensus picks the program whose hash's H4 W row is dominant
+          round_robin    cursor advances one position per call (deterministic)
+          random         shuffled assignment using rotation_seed RNG
+          h4_consensus   picks the program whose hash's H4 W row is dominant
+          seeded_round_robin  like round_robin but starts at seed offset
+        h4_consensus supports an optional `last_w` swarm-consensus value:
+        if the caller has a W-channel sum from a 4-agent swarm, the W
+        mod len(programs) is the channel pick -- the H4 keystone as
+        the active-router.
 
         Returns the new mappings dict.
         """
@@ -402,17 +628,25 @@ class JFinScheduler:
             return dict(self.mappings)
         channel_ids = sorted(self.channels.keys())
         if mode == "random":
-            rng = random.Random(self._rotation_seed)
-            self._rotation_seed += 1
+            rng = random.Random(self.rotation_seed)
             programs_shuf = list(programs)
             rng.shuffle(programs_shuf)
             n = min(len(channel_ids), len(programs_shuf))
             for i in range(n):
                 self.mappings[channel_ids[i]] = programs_shuf[i]
+            # any channels beyond n keep their prior program (no-op)
         elif mode == "h4_consensus":
+            # hash each program -> 4 floats in [0,1) -> H4 gate -> W row
+            # (the sum) -> mod len(programs) -> bank index
+            for cid in channel_ids:
+                w = _h4_consensus_w(programs, self.rotation_seed
+                                    + sum(ord(c) for c in cid))
+                idx = int(abs(w)) % len(programs)
+                self.mappings[cid] = programs[idx]
+        elif mode == "seeded_round_robin":
             for cid in channel_ids:
                 idx = (self._rotation_cursor
-                       + sum(ord(c) for c in cid)) % len(programs)
+                       + self.rotation_seed) % len(programs)
                 self.mappings[cid] = programs[idx]
                 self._rotation_cursor += 1
         else:  # round_robin
@@ -422,20 +656,36 @@ class JFinScheduler:
                 self._rotation_cursor += 1
         return dict(self.mappings)
 
+    def consensus_pick(self, programs: list[str], last_w: float = 0.0) -> str:
+        """H4-consensus router: pick the next program by the W-channel
+        consensus value (a 4-agent Swarm's W-sum, or any float that
+        maps mod len(programs)). Same formula as h4_consensus mode but
+        with the W input supplied directly (the live swarm hook).
+        """
+        if not programs:
+            return ""
+        idx = int(abs(float(last_w))) % len(programs)
+        return programs[idx]
+
     def stats(self) -> dict:
         return {
             cid: {
                 "running": ex.running,
                 "frame_count": ex.frame_count,
+                "keyframes": ex.keyframes,
+                "muxer": ex.muxer,
+                "mock": ex.mock,
                 "program": self.mappings.get(cid, ""),
                 "hls_dir": ex.hls_dir,
                 "playlist": ex.playlist_path(),
+                "mpd": ex.mpd_path(),
             }
             for cid, ex in self.exporters.items()
         }
 
     def __repr__(self):
-        return f"JFinScheduler({len(self.exporters)} channels)"
+        return (f"JFinScheduler({len(self.exporters)} channels, "
+                f"seed={self.rotation_seed})")
 
 
 def make_default_channels(n=4, base_url="http://localhost:8080") -> list[JFinChannel]:
