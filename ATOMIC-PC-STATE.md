@@ -2074,3 +2074,128 @@ python -m examples.jfin_consensus_routing
 ```
 Result: selftest 28/28, pytest 264 passed, jfin_consensus_routing demo OK.
 No sibling changes (only ~/ATOMIC-PC edited).
+
+---
+
+## Iter 30 (2026-09-02): viz_video canvas + JFin HDHomeRun REST
+
+### Gap 1: viz_video not in _VIZ_OUTPUTS → _patch_views won't auto-generate view entry
+
+Fixed in `atomic/program.py`:
+```python
+_VIZ_OUTPUTS = {
+    "viz_series": "cv",
+    "viz_xy": "y",
+    "viz_wxyz3d": "z",
+    "viz_video": "ready",  # NEW
+}
+```
+`_patch_views` now generates `"key"` for every viz type:
+- viz_series: `<id>.cv`
+- viz_xy: `<id>.y`
+- viz_wxyz3d: `<id>.z` (fixed: was previously only using output="z" without explicit key)
+- viz_video: `<id>.frame`
+
+### Gap 2: No viz_video rendering in index.html
+
+Added `drawVideoFrame(canvas, view, bus, series, colorOverride)` in `index.html`.
+Reads `bus[mid+'.rgba_decoded']` (H4-decoded) or `bus[mid+'.rgba']` (raw RGBA fallback).
+Decodes RGBA bytes into an ImageData and blits to canvas; scales to canvas size.
+HUD shows W/X/Y/Z latches + ready status.
+
+Dispatch added in both `renderTile` and `renderGroup`:
+```javascript
+} else if (viz === 'video') {
+  drawVideoFrame(canvas, view, state.bus, series, tileColor);
+}
+```
+
+### Gap 3: No REST endpoint to push frames into the engine bus
+
+Added `Viewer.feed_frame(module_id, frame_bytes)` in `atomic/ui/viewer.py`:
+```python
+def feed_frame(self, module_id: str, frame_bytes: bytes | bytearray | memoryview):
+    eng = self.engine
+    key = module_id + ".frame"
+    eng.bus.set(key, bytes(frame_bytes))
+    return True
+```
+
+Added `POST /api/feed_frame/{name}` in `atomic/ui/server.py`:
+- Accepts raw bytes with `?module=vv` query param
+- Accepts JSON `{"module": "vv", "data": "<base64>" | [int, ...] | bytes}`
+
+### Gap 4: viz_wxyz3d view key extraction (W/X/Y/Z ports → correct key suffix)
+
+`_patch_views` now explicitly sets `entry["key"] = (b.id + ".z").lower()` for viz_wxyz3d.
+Same fix propagated to `_auto_views` in `atomic/ui/viewer.py`.
+`drawWXYZ3D` uses `_wxyz_keys(key)` which strips the ".z" suffix and
+reconstructs W/X/Y/Z keys — so the UI correctly reads `<mid>.w/.x/.y/.z`
+from the bus (the H4 gate latches from viz_video's Python tick).
+
+### Gap 5: HDHomeRun discover_hdhr() returns devices but nothing auto-generates JFinChannel entries
+
+Added `JFinM3U.from_discovered_hdhr(base_url, timeout, livetv_dir)`:
+- Runs `discover_hdhr(timeout)` to get device list
+- One channel per tuner per device: `hdhr-<device_id>-t<N>`
+- Pre-fills `m3u_url` pointing to Jellyfin Live TV ingest
+
+Added `POST /api/jfin/channels/from_discovered` REST endpoint that:
+1. Runs `JFinM3U.discover_hdhr(timeout)` 
+2. Auto-generates channels for each discovered tuner
+3. Registers them in `_JFIN_STATE.m3u`
+
+### Gap 6: No REST endpoint for Jellyfin export control
+
+Added `_JFIN_STATE` singleton (holds m3u + scheduler, pre-seeded with 4 channels):
+```python
+_JFIN_STATE = _JFinState()  # atomic-01 through atomic-04
+```
+
+REST endpoints added:
+- `GET /api/jfin/discover` — HDHomeRun device discovery with timeout
+- `GET /api/jfin/channels` — list all channels (with `.to_dict()`)
+- `POST /api/jfin/channels` — add a channel
+- `POST /api/jfin/channels/from_discovered` — auto-populate from HDHomeRun discovery
+- `GET /api/jfin/exporters` — JFinScheduler.stats()
+- `POST /api/jfin/export/{ch_id}/start` — start an exporter (mock=True by default)
+- `POST /api/jfin/export/{ch_id}/push` — push RGBA frame to exporter
+- `POST /api/jfin/export/{ch_id}/stop` — stop an exporter
+- `GET /api/jfin/scheduler` — scheduler state
+- `POST /api/jfin/rotate` — rotate channel-program mappings
+
+### Code changes
+
+- `atomic/jellyfin.py`: Added `to_dict()` to JFinChannel, `find_by_id()` and
+  `from_discovered_hdhr()` to JFinM3U, made `discover_hdhr` accept `timeout`,
+  added `_JFIN_STATE` singleton.
+- `atomic/program.py`: Added `viz_video` to `_VIZ_OUTPUTS`, explicit `key`
+  generation in `_patch_views`.
+- `atomic/ui/viewer.py`: Added `viz_video` to `_VIZ_TYPES`, `video` branch
+  in `_auto_views`, explicit key for wxyz3d/video, `feed_frame()` method.
+- `atomic/ui/server.py`: Added 10 new REST endpoints for feed_frame and Jellyfin.
+- `atomic/ui/static/index.html`: Added `drawVideoFrame()` + `'video'` dispatch
+  in both `renderTile` and `renderGroup`.
+- `atomic/selftest.py`: Added section 29 (10 checks for iter30).
+- `tests/test_iter30.py` (new, 25 tests): view integration, to_dict, find_by_id,
+  from_discovered_hdhr, _JFIN_STATE, feed_frame, endpoint registration, end-to-end
+  via TestClient.
+
+Verification:
+```
+python -m pytest tests -q
+  -> 289 passed (25 iter30 net, ~12s)
+python -m atomic.selftest
+  -> 29/29 sections ok (~7s)
+python -m examples.jfin_consensus_routing
+  -> [swarm, 4 rotation modes, DASH .mpd, recursive M3U] OK
+python -m examples.bicameral_pipeline
+  -> [bridge depth=1, accum=2.0] OK
+node --check fabric/web/jsfx.js
+  -> OK
+git push
+  -> 8cea162 iter30
+```
+
+Result: selftest 29/29, pytest 289 passed, demos OK.
+Pushed to github.com/bbeartheancient/atomic-computing main.
