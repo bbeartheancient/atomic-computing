@@ -1912,3 +1912,69 @@ Result: `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest`
 `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m pytest tests -q` ->
 200 passed (~8s).
 No sibling changes (only ~/ATOMIC-PC edited).
+
+───────────────────────────────────────────────────────────────────
+ITER 28 — Jellyfin/HDHomeRun integration (goal 6 continued)
+
+Goal: jfin_live_export atom, JFinScheduler/Exporter/M3U, channel rotation,
+M3U tuner emission, HDHomeRun discovery, topology docs.
+
+Changes:
+  * `atomic/jellyfin.py` (new, 425 lines): OS-level topology module.
+    JFinChannel — one logical TV channel with M3U EXTINF line format.
+    JFinExporter — HLS/DASH exporter: owns ffmpeg subprocess, accepts
+    RGBA frames per tick, writes HLS segments + live.m3u8 playlist.
+    JFinM3U — HDHomeRun M3U tuner emitter: writes /etc/jellyfin/livetv/*.m3u.
+    JFinScheduler — channel rotation (round_robin/random/h4_consensus),
+    program-to-channel mapping, per-channel frame push + stats.
+    make_default_channels() — factory for n default ATOMIC-TV channels.
+    JFinM3U.discover_hdhr() — UDP broadcast probe for HDHomeRun devices.
+
+  * `atomic/gates.py`: jfin_live_export atom (sink, 2 inputs in+trig, 2
+    outputs active+frames_pushed, multi_in=True, global JFinScheduler reg).
+    bus key <id>.frame consumed; pushed to JFinScheduler on gate>0.5.
+    register_jfin_scheduler(sched) wires the atom to the global scheduler.
+
+  * `atomic/__init__.py`: exports JFinExporter, JFinM3U, JFinChannel,
+    JFinScheduler, make_default_channels, register_jfin_scheduler,
+    DEFAULT_LIVETV_DIR, DEFAULT_HLS_DIR.
+
+  * `tests/test_iter28.py` (new, 20 tests):
+    TestJFinChannel (3): M3U line format, repr, make_default_channels.
+    TestJFinExporter (4): init with ffmpeg, frame size validation,
+    playlist_path, push one frame.
+    TestJFinM3U (3): write/read round-trip, write_all per-channel,
+    discover_hdhr returns list.
+    TestJFinScheduler (7): register, assign_program, push_frame,
+    rotate round_robin, rotate random, rotate h4_consensus, rotate empty.
+    TestJFinLiveExportAtom (2): registered, tick (gate=0, no frames pushed).
+    All 20 pass.
+
+  * `examples/jfin_channel_rotation.py` (new): 4 H3 sessions (stubbed),
+    4 channels, round-robin push (8 ticks), 3 rotation modes,
+    M3U emission to temp dir. End-to-end demo.
+
+  * `atomic/selftest.py` section 27 (12 checks): jfin_live_export atom
+    registered, JFinChannel M3U format, JFinExporter init + playlist_path,
+    frame size validation, JFinM3U write/read, JFinScheduler register +
+    assign_program + push_frame, rotate round_robin, rotate random,
+    rotate h4_consensus, jfin_live_export atom tick, make_default_channels
+    factory, HDHomeRun discover returns list. All 12 pass.
+
+  * `ATOMIC-PC-CORE.md`: new section "BICAMERAL GPU SPLIT (iter 25/27/28)"
+    documenting the H3 GPU1 + VLLM GPU0 topology with concrete wire
+    contract. New section "JELLYFIN / HDHOMERUN INTEGRATION (iter 28)"
+    documenting the full infinite-livestream -> Jellyfin -> HDHomeRun
+    pipeline topology with ASCII diagram.
+
+Verification:
+```
+cd ~/ATOMIC-PC && python -m atomic.selftest
+  -> 27/27 sections ok
+cd ~/ATOMIC-PC && python -m pytest tests -q
+  -> 245 passed (~11s, +20 iter28 net)
+python -m examples.jfin_channel_rotation
+  -> [4 H3 sessions, 4 channels, 3 rotation modes, M3U emission OK]
+```
+Result: selftest 27/27, pytest 245 passed, jfin_channel_rotation demo OK.
+No sibling changes (only ~/ATOMIC-PC edited).

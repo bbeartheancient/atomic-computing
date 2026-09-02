@@ -110,6 +110,40 @@ TILES LIVE VIZ (iter 15):
       (window ticks per frame, normalized 0..1 per tile) and swarm 16 heatmap;
       Display.validate_wgsl structural + naga.
 
+BICAMERAL GPU SPLIT (iter 25/27/28):
+    The two-GPU pipeline is the operator's "conscious/subconscious" model:
+      GPU0 (conscious): the duty VLLM (Qwen 27B) — already loaded, owns the
+        control path: prompt construction, teacher examples, decompose,
+        evolver, swarm consensus, HostBridge (host-RAM FIFO).
+      GPU1 (subconscious): H3 FastVideo on a B70 — sees prompts as the
+        "imagination" of the conscious model. Loads its own ComfyUI T2VA
+        pipeline, owns the per-tick frame stream. Per-tick = per-frame
+        (H3 FastVideo cuts generation to minimum).
+    Wire contract: HostBridge(latency=1) — a tick on GPU0's engine pops
+    a frame from GPU1's session. Atomic-side semantics unchanged (still
+    host-RAM FIFO); the GPU pair is the actual GPU0/GPU1 topology.
+    The viz_video sink consumes the per-tick RGBA frame blob; the H4 gate
+    decodes per-pixel (W=log alpha, XYZ=linear RGB). All frames portable
+    through QBF (iter 8) — recorded to .qbf shards, replay bit-identical.
+
+JELLYFIN / HDHOMERUN INTEGRATION (iter 28):
+    The "infinite slop" / "interdimensional cable" topology:
+      H3 session (GPU1) -> viz_video -> jfin_live_export -> JFinScheduler
+                          -> ffmpeg HLS muxer (x264 + aac)
+                          -> Jellyfin Live TV ingest
+                          -> HDHomeRun M3U tuner (/etc/jellyfin/livetv/*.m3u)
+                          -> LAN clients (any M3U-aware player)
+    The JFinScheduler rotates which atomic program/H3 instance maps to
+    which Live TV channel (modes: round_robin, random, h4_consensus).
+    A fleet of infinite-livestream processes becomes a randomized
+    multichannel universe: 4 H3 sessions on GPU1 -> 4 LIVE TV channels
+    on Jellyfin -> 4 tuner entries on HDHomeRun -> 4 channels on any
+    LAN client.
+    Harness treats Jellyfin/ffmpeg as OS-level services (not vendored);
+    atomic/jellyfin.py owns the topology: M3U emission, channel
+    registration, ffmpeg subprocess lifecycle. See
+    `examples/jfin_channel_rotation.py` for the end-to-end demo.
+
 RETRIEVAL (iter 16, zvec-grep):
     - Workspace-aware semantic retrieval via `zg` (npm @zvec/zvec-grep 0.2.1,
       model local/potion-code-16m-v2, 256-dim cosine, 42 files / 521 entities,

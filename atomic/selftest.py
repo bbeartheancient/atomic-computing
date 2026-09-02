@@ -1,4 +1,4 @@
-"""selftest: unified gauntlet for ATOMIC-PC (iter 27).
+"""selftest: unified gauntlet for ATOMIC-PC (iter 28).
 
 26 sections, N/N ok per section, exit 0/1.
 Run: cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest
@@ -36,8 +36,10 @@ Sections:
  24 iter25   goal B: bicameral live demo (BicameralPipeline, bridge_latency=1, UI /api/bicameral endpoints)
   25 iter26   teach domain expansion: 14 examples across 6 domains, QBF persistence, keyword routing, all runnable
   26 iter27   goal C: video generation (viz_video atom, HostBridge frame blob, H3 stub/session, swarm prompt bank, H4 RGBA log/linear decoder)
+  27 iter28   goal C continued: jfin_live_export atom, JFinScheduler/Exporter/M3U, channel rotation (round_robin/random/h4), M3U emission, HDHomeRun discovery
 """
 import json, math, os, random, shutil, struct, subprocess, sys, tempfile, time
+import pytest
 
 def _fix_paths():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -2937,8 +2939,191 @@ def s26_checks():
     return checks
 
 
+def s27_checks():
+    checks = []
+
+    def jfin_atom_registered():
+        from atomic import ATOMS
+        a = ATOMS["jfin_live_export"]
+        assert a.category == "sink"
+        assert "in" in a.inputs
+        assert "trig" in a.inputs
+        assert "active" in a.outputs
+        assert "frames_pushed" in a.outputs
+    checks.append(("jfin_live_export atom registered (sink, 2 in, 2 out)", jfin_atom_registered))
+
+    def jfin_channel_m3u_format():
+        from atomic.jellyfin import JFinChannel
+        ch = JFinChannel("atomic-01", "ATOMIC-1",
+                         "http://jellyfin/live.m3u8",
+                         group="ATOMIC", number=1)
+        line = ch.m3u_line()
+        assert 'tvg-id="atomic-01"' in line
+        assert 'tvg-name="ATOMIC-1"' in line
+        assert 'group-title="ATOMIC"' in line
+        assert "ATOMIC-1\n" in line
+    checks.append(("JFinChannel M3U EXTINF line format", jfin_channel_m3u_format))
+
+    def jfin_exporter_init():
+        from atomic.jellyfin import JFinExporter, JFinChannel
+        ch = JFinChannel("test", "TEST", "http://x.m3u8")
+        tmp = tempfile.mkdtemp(prefix="selftest_jfin_")
+        try:
+            ex = JFinExporter(ch, hls_dir=tmp, width=64, height=64)
+            assert ex.running is True
+            assert "live.m3u8" in ex.playlist_path()
+            ex.stop()
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    checks.append(("JFinExporter init + running + playlist_path", jfin_exporter_init))
+
+    def jfin_frame_size_check():
+        from atomic.jellyfin import JFinExporter, JFinChannel, JFinError
+        ch = JFinChannel("sz", "SZ", "http://x.m3u8")
+        tmp = tempfile.mkdtemp(prefix="selftest_jfin_sz_")
+        try:
+            ex = JFinExporter(ch, hls_dir=tmp, width=8, height=8)
+            with pytest.raises(JFinError, match="frame size mismatch"):
+                ex.push(b"\x00" * 100, width=8, height=8)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    checks.append(("JFinExporter frame size validation raises JFinError", jfin_frame_size_check))
+
+    def jfin_m3u_write_read():
+        from atomic.jellyfin import JFinM3U, JFinChannel
+        ch1 = JFinChannel("a1", "ATOMIC-1", "http://a1.m3u8", group="TV", number=1)
+        ch2 = JFinChannel("a2", "ATOMIC-2", "http://a2.m3u8", group="TV", number=2)
+        tmp = tempfile.mkdtemp(prefix="selftest_jfin_m3u_")
+        try:
+            m3u = JFinM3U(livetv_dir=tmp)
+            m3u.add_channel(ch1)
+            m3u.add_channel(ch2)
+            path = m3u.write("atomic.m3u")
+            assert os.path.exists(path)
+            with open(path) as f:
+                content = f.read()
+            assert "#EXTM3U" in content
+            assert "ATOMIC-1" in content
+            assert "ATOMIC-2" in content
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    checks.append(("JFinM3U write/read round-trip", jfin_m3u_write_read))
+
+    def jfin_scheduler_register():
+        from atomic.jellyfin import JFinScheduler, JFinChannel
+        sched = JFinScheduler()
+        ch = JFinChannel("sc1", "SC1", "http://x.m3u8")
+        tmp = tempfile.mkdtemp(prefix="selftest_jfin_sched_")
+        try:
+            ex = sched.register_channel(ch, hls_dir=tmp, width=8, height=8)
+            assert ch.id in sched.channels
+            assert ch.id in sched.exporters
+            sched.assign_program(ch.id, "test_prog")
+            assert sched.mappings[ch.id] == "test_prog"
+            ok = sched.push_frame(ch.id, b"\x00" * 8 * 8 * 4, width=8, height=8)
+            assert ok is True  # ffmpeg is available
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    checks.append(("JFinScheduler register + assign_program + push_frame", jfin_scheduler_register))
+
+    def jfin_rotation_round_robin():
+        from atomic.jellyfin import JFinScheduler, JFinChannel
+        sched = JFinScheduler()
+        for i in range(3):
+            ch = JFinChannel(f"rr{i}", f"RR{i}", "http://x.m3u8")
+            tmp = tempfile.mkdtemp(prefix=f"selftest_rr_{i}_")
+            sched.register_channel(ch, hls_dir=tmp, width=8, height=8)
+        programs = ["p0", "p1", "p2", "p3"]
+        try:
+            sched.rotate(programs, mode="round_robin")
+            m1 = dict(sched.mappings)
+            sched.rotate(programs, mode="round_robin")
+            m2 = dict(sched.mappings)
+            assert m1 != m2  # cursor advances
+            for v in m1.values():
+                assert v in programs
+        finally:
+            sched.stop_all()
+    checks.append(("JFinScheduler rotate round_robin advances cursor", jfin_rotation_round_robin))
+
+    def jfin_rotation_random():
+        from atomic.jellyfin import JFinScheduler, JFinChannel
+        sched = JFinScheduler()
+        ch = JFinChannel("rn1", "RN1", "http://x.m3u8")
+        tmp = tempfile.mkdtemp(prefix="selftest_rn_")
+        try:
+            sched.register_channel(ch, hls_dir=tmp, width=8, height=8)
+            programs = ["a", "b", "c", "d"]
+            sched.rotate(programs, mode="random")
+            assert sched.mappings["rn1"] in programs
+        finally:
+            sched.stop_all()
+    checks.append(("JFinScheduler rotate random assigns valid program", jfin_rotation_random))
+
+    def jfin_rotation_h4_consensus():
+        from atomic.jellyfin import JFinScheduler, JFinChannel
+        sched = JFinScheduler()
+        for i in range(2):
+            ch = JFinChannel(f"h4{i}", f"H4{i}", "http://x.m3u8")
+            tmp = tempfile.mkdtemp(prefix=f"selftest_h4_{i}_")
+            sched.register_channel(ch, hls_dir=tmp, width=8, height=8)
+        programs = ["w", "x", "y", "z"]
+        try:
+            sched.rotate(programs, mode="h4_consensus")
+            for v in sched.mappings.values():
+                assert v in programs
+        finally:
+            sched.stop_all()
+    checks.append(("JFinScheduler rotate h4_consensus assigns valid program", jfin_rotation_h4_consensus))
+
+    def jfin_live_export_atom_tick():
+        from atomic import Program, Block, Wire, Engine
+        from atomic.gates import register_jfin_scheduler
+        from atomic.jellyfin import JFinScheduler, JFinChannel
+        p = Program("jle_s27", blocks=[
+            Block("c", "const", {"value": 1.0}),
+            Block("jle", "jfin_live_export", {"scheduler_key": "ch1", "width": 8, "height": 8}),
+        ], wires=[Wire("c.cv", "jle.in")])
+        sched = JFinScheduler()
+        register_jfin_scheduler(sched)
+        tmp = tempfile.mkdtemp(prefix="selftest_jle_")
+        try:
+            ch = JFinChannel("ch1", "CH1", "http://x.m3u8")
+            sched.register_channel(ch, hls_dir=tmp, width=8, height=8)
+            patch = p.compile("microfx")
+            eng = Engine(patch["modules"], patch.get("wires", []))
+            eng.run(2)
+            jle_id = next((n.id for n in eng.nodes
+                          if n.primitive == "jfin_live_export"), None)
+            assert jle_id is not None
+            assert eng.bus.get(f"{jle_id}.active") is not None
+            assert eng.bus.get(f"{jle_id}.frames_pushed") is not None
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+            register_jfin_scheduler(None)
+    checks.append(("jfin_live_export atom tick (gate=0, no frames pushed)", jfin_live_export_atom_tick))
+
+    def make_default_channels_factory():
+        from atomic.jellyfin import make_default_channels
+        channels = make_default_channels(n=4)
+        assert len(channels) == 4
+        assert channels[0].number == 1
+        assert channels[3].number == 4
+        assert channels[0].id == "atomic-01"
+        assert channels[3].id == "atomic-04"
+    checks.append(("make_default_channels(4) factory", make_default_channels_factory))
+
+    def hdhr_discover_returns_list():
+        from atomic.jellyfin import JFinM3U
+        result = JFinM3U.discover_hdhr()
+        assert isinstance(result, list)
+    checks.append(("JFinM3U.discover_hdhr returns list", hdhr_discover_returns_list))
+
+    return checks
+
+
 def main():
-    print("ATOMIC-PC selftest — 26 sections")
+    print("ATOMIC-PC selftest — 27 sections")
     print("="*60)
     results=[]
     results.append(_run_section(1, "bridge", s1_checks))
@@ -2967,6 +3152,7 @@ def main():
     results.append(_run_section(24, "iter25 goal B bicameral live demo", s24_checks))
     results.append(_run_section(25, "iter26 teach domain expansion (14 examples, QBF)", s25_checks))
     results.append(_run_section(26, "iter27 video generation (H3 + viz_video + swarm bank)", s26_checks))
+    results.append(_run_section(27, "iter28 Jellyfin/HDHomeRun (jfin_live_export + scheduler + M3U + rotation)", s27_checks))
     print("="*60)
     ok=sum(1 for r in results if r)
     print(f"selftest: {ok}/{len(results)} sections ok")

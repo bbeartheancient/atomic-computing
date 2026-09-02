@@ -32,7 +32,10 @@ from .bridge import (HostBridge, BicameralPipeline, BicameralResult,
                      latency_histogram, bridge_benchmark)
 from .demo import swarm_evolve_teach_demo
 from .video import (H3Client, H3Stub, H3File, H3Source, H3Session, H3Frame,
-                    H3Error, PROMPT_BANK_DEFAULT)
+                     H3Error, PROMPT_BANK_DEFAULT)
+from .jellyfin import (JFinExporter, JFinM3U, JFinChannel, JFinScheduler,
+                        make_default_channels, DEFAULT_LIVETV_DIR, DEFAULT_HLS_DIR)
+from .gates import register_jfin_scheduler
 from .context import (is_available as zg_available, zg_version, query as zg_query,
                       query_rg as zg_query_rg, status as zg_status, assert_retrieval,
                       CANONICAL_QUERIES)
@@ -60,4 +63,7 @@ __all__ = ["Bus", "Node", "Port", "Wire", "Engine", "ATOMS", "Atom",
                 "zg_available", "zg_version", "zg_query", "zg_query_rg", "zg_status",
                 "assert_retrieval", "CANONICAL_QUERIES",
                 "H3Client", "H3Stub", "H3File", "H3Source",
-                "H3Session", "H3Frame", "H3Error", "PROMPT_BANK_DEFAULT"]
+                "H3Session", "H3Frame", "H3Error", "PROMPT_BANK_DEFAULT",
+                "JFinExporter", "JFinM3U", "JFinChannel", "JFinScheduler",
+                "make_default_channels", "register_jfin_scheduler",
+                "DEFAULT_LIVETV_DIR", "DEFAULT_HLS_DIR"]

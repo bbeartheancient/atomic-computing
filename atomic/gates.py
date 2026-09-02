@@ -780,6 +780,82 @@ ATOMS["viz_heatmap"] = Atom("viz_heatmap", "Heatmap sink (per-tile live)",
                             [], _hm_src)
 
 
+# -- jfin_live_export: tails the active program, ffmpeg HLS/DASH ingest -----
+# The jfin_live_export atom consumes a per-tick RGBA frame from the bus
+# key <id>.frame (set by the H3 session or a HostBridge frame-blob push)
+# and pushes it to the JFinScheduler. Jellyfin's Live TV ingest picks up
+# the HLS playlist and surfaces the channel. HDHomeRun M3U tuners
+# discover the channels via /etc/jellyfin/livetv/*.m3u.
+#
+# Pipeline topology:
+#   H3 session (GPU1) -> viz_video -> jfin_live_export
+#                                        -> JFinScheduler
+#                                        -> ffmpeg HLS muxer
+#                                        -> Jellyfin Live TV
+#                                        -> HDHomeRun M3U tuner
+#                                        -> LAN clients
+#
+# The export is gated by a cv input (0 = paused, 1 = exporting).
+# A trigger input (trig) forces a keyframe (segment boundary) in the HLS
+# stream, useful for channel switching.
+# Output ports: active (1/0), frames_pushed (count).
+
+_GLOBAL_JFIN_SCHEDULER = None
+
+
+def register_jfin_scheduler(sched):
+    global _GLOBAL_JFIN_SCHEDULER
+    _GLOBAL_JFIN_SCHEDULER = sched
+
+
+def _jle_init(n):
+    n.set_var("active_gate", 0.0)
+    n.set_var("frames_pushed", 0.0)
+    n.set_var("prev_gate", 0.0)
+
+
+def _jle_tick(n):
+    gate = n.input("cv")
+    trig = n.input("trig")
+    n.set_var("gate", gate)
+    n.set_var("trig", trig)
+
+    active = 0.0
+    frames_pushed = n.read("frames_pushed")
+    scheduler_key = n.params.get("scheduler_key", "")
+
+    if gate > 0.5:
+        frame = n.bus.get(n.id + ".frame")
+        if frame is not None and hasattr(frame, "__bytes__"):
+            rgba = bytes(frame)
+            w = int(n.params.get("width", 640))
+            h = int(n.params.get("height", 360))
+            sched = _GLOBAL_JFIN_SCHEDULER
+            if sched is not None and scheduler_key:
+                ok = sched.push_frame(scheduler_key, rgba, width=w, height=h)
+                if ok:
+                    frames_pushed = frames_pushed + 1.0
+                    active = 1.0
+
+    n.set_var("prev_gate", gate)
+    n.set_var("active_gate", active)
+    n.set_var("frames_pushed", frames_pushed)
+    n.output("active", active)
+    n.output("frames_pushed", frames_pushed)
+
+
+ATOMS["jfin_live_export"] = Atom(
+    "jfin_live_export",
+    "Jellyfin Live TV export (HLS/DASH -> Jellyfin -> HDHomeRun)",
+    "sink",
+    {"scheduler_key": "", "width": 640, "height": 360},
+    ["in", "trig"],
+    ["active", "frames_pushed"],
+    "@init\nscheduler_key = '';\nwidth = 640; height = 360;\n"
+    "@tick\nactive = 0;\nframes_pushed = 0;\n",
+    init=_jle_init, tick=_jle_tick, multi_in=True)
+
+
 # -- Canonical param ranges (iter 3) --------------------------------------------
 # The UI server's _control_schema() reads (primitive, param_key) -> (min,
 # max, step, unit) tuples to drive the slider widget.  This table is
