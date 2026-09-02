@@ -653,3 +653,62 @@ ATOMS["h4_slide"] = Atom("h4_slide", "H(4) spatial gate (CORE rows)",
 _reg("viz_series")
 _reg("viz_xy")
 _reg("viz_wxyz3d")
+
+
+# -- viz_heatmap: per-tile heatmap sink (iter 3) --------------------------------
+# The renderer (static/index.html) reads bus[<id>.hm] (a 0..1 intensity
+# per tile slot, written by the heatmap atom itself) and draws the
+# 4x4 tile wall.  The atom takes the same wire (cv) input the other
+# viz atoms do, normalises to 0..1 by clipping |x| to [0, 1], and
+# writes the tile-correlated bus key (4x4 = 16 slots, by row-major
+# rotation of the input across the slots).  This is the live in-engine
+# counterpart of Display.heatmap_animation: where that one drives a
+# whole wall from a recorded trace, viz_heatmap drives the wall live
+# tick-by-tick without trace recording.  Empty patch body; no Python
+# tick is required because the engine owns the bus update via the
+# input port (input.cv is on the bus via the standard wire latch -- the
+# live renderer reads bus[<id>.cv] directly, no atom body needed).
+# We register it here so the compiler accepts viz_heatmap in the IR.
+
+# The actual bus-key mapping (row-major, wrap) is in the renderer
+# (static/index.html, _bus_to_heatmap).  This atom is a typed sink --
+# the IR validates ports ["in"] and outputs [].
+_at = _MF["viz_series"]  # ports-only: viz_series already has ['in'] -> ['cv']; for a pure heatmap sink we want 0 outputs
+_hm_src = _at.get("source", "")
+_hm_params = {p["name"]: p["default"] for p in _at.get("params", [])}
+ATOMS["viz_heatmap"] = Atom("viz_heatmap", "Heatmap sink (per-tile live)",
+                            "sink", _hm_params, list(_at.get("inputs", [])),
+                            [], _hm_src)
+
+
+# -- Canonical param ranges (iter 3) --------------------------------------------
+# The UI server's _control_schema() reads (primitive, param_key) -> (min,
+# max, step, unit) tuples to drive the slider widget.  This table is
+# the canonical source; the server imports it from here so any new atom
+# is range-decorated in one place.  Anything not in the table falls
+# through to _fallback_range() in the server, which uses key-name
+# heuristics.  Format: tuple of (min, max, step, unit_string).
+
+PARAM_RANGES: dict[tuple[str, str], tuple[float, float, float, str]] = {
+    ("clock_bpm", "bpm"):       (1.0, 300.0, 1.0, "bpm"),
+    ("sine_lfo", "hz"):         (0.01, 20.0, 0.01, "Hz"),
+    ("sine_lfo", "amp"):        (-4.0, 4.0, 0.01, ""),
+    ("sine_lfo", "offset"):     (-4.0, 4.0, 0.01, ""),
+    ("gain", "gain"):           (-4.0, 4.0, 0.01, "dB"),
+    ("gain", "factor"):         (0.0, 10.0, 0.01, ""),
+    ("smooth", "alpha"):        (0.0, 1.0, 0.001, ""),
+    ("smooth", "smooth"):       (0.0, 1.0, 0.001, ""),
+    ("accum", "per_tick"):      (-100.0, 100.0, 0.1, ""),
+    ("accum", "reset"):         (0.0, 1.0, 1.0, ""),
+    ("threshold", "hi"):        (-4.0, 4.0, 0.01, ""),
+    ("threshold", "lo"):        (-4.0, 4.0, 0.01, ""),
+    ("threshold", "threshold"): (-4.0, 4.0, 0.01, ""),
+    ("const", "value"):         (-4.0, 4.0, 0.01, ""),
+    ("toffoli", "lo"):          (0.0, 1.0, 1.0, ""),
+    ("toffoli", "hi"):          (0.0, 1.0, 1.0, ""),
+}
+
+
+def param_range(primitive: str, key: str) -> tuple[float, float, float, str] | None:
+    """Public lookup: returns (min, max, step, unit) or None."""
+    return PARAM_RANGES.get((primitive.lower(), key.lower()))

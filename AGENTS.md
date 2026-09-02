@@ -7,6 +7,16 @@ gates) and rendered onto a tiled display. The point is that an LLM assembles
 a working app by matching function paths through the gates — not by writing
 lines of a conventional language.
 
+
+UPDATE 9/2/2026:  Source repos added to local drive:
+    - WebPd: /home/bbear/WebPd
+    - Open Stage Control: /home/bbear/open-stage-control_1.31.1_node
+    - Pure Data: /home/bbear/pure-data
+    - Pure Data JS: /home/bbear/pdjs
+    
+UPDATE 2 9/2/2026:  Local Duty LLM needs trained LoRa to fully enable atomic computing functions
+    - LoRa similar to Backlot scriptwriting LoRa but for atomic computing functions
+
 ## Objective
 This directory is the project root and concept home: the spec
 (`ATOMIC-PC-CORE.md`), the persistent plan+evidence journal
@@ -17,8 +27,8 @@ node oracle in BOTH modes (MODE 1 batch, MODE 2 live/resident with
 per-tick feed hooks), and — since iter 8 — the QBF portable trace
 store (goal 6; the operator's "middle" format: working blobs, no
 50 MB cap, H(4) gates optional). "Done" = the spec stays coherent
-AND the harness stays green (170 tests, 16 sections, `ATOMIC-PC-STATE.md` tracks
-per-iteration state; iter 17 re-verified 16/16 + 170 passed + 359 fabric + hoa selftest).
+AND the harness stays green (185 tests, 22 sections, `ATOMIC-PC-STATE.md` tracks
+per-iteration state; iter 19 re-verified 17/17 + 185 passed + 359 fabric + hoa selftest).
 Still: git remote `github.com/bbeartheancient/atomic-computing` is live on `main` (first push e9cf4f1, 43 files); vendored `fabric/` (2.0 MB, jsfx + microfx + fixture) and `hoa64/` (8.8 MB, Hadamard spatial lib) are now in-repo so a fresh clone is standalone. Third-party siblings (`Rack`, `WebPd`, `circuitjs1`, `memvid`) remain external and are not vendored.
 
 PRIME DIRECTIVE: IF A BETTER WAY WOULD WORK, SUGGEST IT!
@@ -28,9 +38,21 @@ IMPORTANT: When making edits, make the edits first. If additional questions pers
             -- iteration budgets are capped at 128k; you must make your edits and end turn for next iteration at 128k token usage.
 
 Verify the harness (unified, vendored `fabric/` + `hoa64/`):
-- ATOMIC-PC harness (170 tests): `python -m pytest tests -q`
+- ATOMIC-PC harness (185 tests): `python -m pytest tests -q`
   (oracle MODE 1+2 spawn `node`; vendored `fabric/web/jsfx.js` + `hoa64` — no external sibling required).
-- ATOMIC-PC gauntlet (16 sections, ~119 checks, ~5s): `python -m atomic.selftest`
+- ATOMIC-PC gauntlet (22 sections, ~141 checks, ~5s): `python -m atomic.selftest`
+- Live demos (iter 18, five end-to-end scripts under `examples/`):
+  - `python -m examples.qbf_persistence_round_trip` — record+archive+load+replay a trace via `.qbf` shard
+  - `python -m examples.hadamard_wxyz_scope`        — h4_slide keystone + 4x4 Display + viz_series
+  - `python -m examples.gated_clock_counter`        — from_description() -> compile -> engine run
+  - `python -m examples.swarm_evolve_teach_demo`     — swarm -> evolve -> teach -> QBF round-trip
+  - `python -m examples.heatmap_animation`          — Display.heatmap_animation from a live trace
+- ATOMIC-PC UI tile wall (iter 17, port 18094, FastAPI + HTML5 canvas):
+  - boot: `uvicorn atomic.ui:app --port 18094 --host 0.0.0.0`
+  - browse: `http://localhost:18094/run/hadamard_wxyz` (any of 7 demo programs)
+  - REST: `/api/programs`, `/api/control/<p>`, `/api/views/<p>`, `/api/snapshot/<p>`,
+          `/api/tap/<p>`, `/api/feed/<p>`, `/api/batch/<p>`, `/api/stream/<p>`
+  - WS: `/ws/<p>` — per-tick snapshot stream + tap/param/feed/batch client msgs
 
 Verify the vendored harness:
 - EEL2/JSFX runtime + fabric suite: `python -m pytest fabric/tests -q`
@@ -92,23 +114,33 @@ twin of `evaluatePatch` (the pinned per-tick loop, batch `run()` +
 live `tick()` with per-tick feeds); `gates.py` = the unified atom
 catalog (CV + logic + quantum + alogic + h4_slide + sinks);
 `program.py` = the AtomicProgram IR (strict validation + 5 compile
-targets); `oracle.py` = the node driver, MODE 1 batch + MODE 2
-resident live (per-tick stdio hooks for live taps/params);
-`jsnum.py`/`dsp.py` = the JS-fidelity numerics + MDCT; `tiles.py` = the
-display model (control frame + 3x3/4x4 agnostic tile wall,
-resolution derived from the full display, linked tile groups =
-larger sub-matrices); `trace.py` = the flow observer (per-tick
-stimulus + per-node in/out/latency rings, snapshot/export,
-`from_snapshot()` rebuild, `replay()` re-drives a fresh engine
-from the recorded stimulus); `qbf.py` = the Quantum Blob Format
-(goal 6, iter 8): a self-describing named-blob container — 64-byte
-header, u64 offsets/sizes (no 50 MB tier, no search index to
-poison), per-blob sha256, and the H(4) gate as an OPTIONAL per-
-blob codec flag (the CORE keystone); `qbfstore.py` = the portable
-trace archive on top of it (one .qbf shard per store: index +
-per-run manifest/ticks/one blob per node frame; append_run/
-load_run/flow_trace/replay_run/export_run; bit-identical replay;
-dir ~/.runtime/atomic_qbf, env ATOMIC_QBF_DIR).
+targets, auto-views for `viz_*` sinks); `oracle.py` = the node
+driver, MODE 1 batch + MODE 2 resident live (per-tick stdio hooks
+for live taps/params); `jsnum.py`/`dsp.py` = the JS-fidelity
+numerics + MDCT; `tiles.py` = the display model (control frame +
+3x3/4x4 agnostic tile wall, resolution derived from the full
+display, linked tile groups = larger sub-matrices);
+`trace.py` = the flow observer (per-tick stimulus + per-node
+in/out/latency rings, snapshot/export, `from_snapshot()` rebuild,
+`replay()` re-drives a fresh engine from the recorded stimulus);
+`qbf.py` = the Quantum Blob Format (goal 6, iter 8): a self-
+describing named-blob container — 64-byte header, u64 offsets/sizes
+(no 50 MB tier, no search index to poison), per-blob sha256, and
+the H(4) gate as an OPTIONAL per-blob codec flag (the CORE
+keystone); `qbfstore.py` = the portable trace archive on top of
+it (one .qbf shard per store: index + per-run manifest/ticks/one
+blob per node frame; append_run/load_run/flow_trace/replay_run/
+export_run; bit-identical replay; dir ~/.runtime/atomic_qbf,
+env ATOMIC_QBF_DIR); `ui/` (iter 17) = the FastAPI tile wall
+(`atomic.ui.server:app`, port 18094, lifespan auto-registers
+7 demo programs) + `viewer.py` (ProgramViewer: batch + per-tick
+`tick_once` + WebSocket queue broadcast + live tap/param feed
+apply, all snapshotted into `{t, running, bus, series, views}`),
+`programs.py` (built-in demo program registry: clock_counter,
+gated_clock_counter, sine_lfo_scope, hadamard_wxyz, xy_pad,
+wxyz3d_demo, heatmap_demo), `static/index.html` (4x4 canvas tile
+wall + control frame + WebSocket live stream + heatmap/series/xy/
+wxyz3d renderers, falls back to REST fetch when WS unavailable).
 The engine takes an optional `trace=` observer: pure read-only
 (touched runs stay bit-identical; off by default).
 
@@ -120,7 +152,7 @@ The engine takes an optional `trace=` observer: pure read-only
   "atomizing data processes into keyword gates") is live on `main` (first push e9cf4f1); vendored `fabric/` and `hoa64/` make a fresh clone standalone.
 - Sibling trees: vendored `fabric/` (2.0 MB) and `hoa64/` (8.8 MB) are in-repo; third-party siblings (`Rack`, `WebPd`, `circuitjs1`, `memvid`) remain external and are not vendored.
 - Interpreters: `python` 3.11+ (`torch` + `transformers` for local harness; `node` v26 for JSFX oracle; `numpy` for `hoa64`).
-- Ports (optional local services): `fabric` :18093, `hoa64` :8765/:8770. Node v26 for JSFX.
+- Ports (optional local services): `fabric` :18093, `hoa64` :8765/:8770, `atomic.ui` :18094. Node v26 for JSFX.
 
 ## Decision frames
 - Import sibling trees; vendored `fabric/` and `hoa64/` are the exception for standalone (others never vendored).

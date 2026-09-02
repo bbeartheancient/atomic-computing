@@ -103,7 +103,8 @@ class Engine:
     def snapshot(self):
         return {"bus": self.bus.snapshot(),
                 "series": {k: list(v) for k, v in self.series.items()},
-                "final": self.bus.snapshot()}
+                "final": self.bus.snapshot(),
+                "window": VIEW_WINDOW}
 
     def tick(self):
         """One step of the engine (live in mode 2; state persists)."""

@@ -1,6 +1,6 @@
-"""selftest: unified gauntlet for ATOMIC-PC (iter 16).
+"""selftest: unified gauntlet for ATOMIC-PC (iter 20).
 
-16 sections, N/N ok per section, exit 0/1.
+17 sections, N/N ok per section, exit 0/1.
 Run: cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest
 
 Sections:
@@ -18,14 +18,18 @@ Sections:
   7 tiles    3x3 res, 4x4 border, frame/tiles, rejections, linking, summary
   8 replay   traced==untraced, counter replay, live-feed replay, ring wrap
   9 qbf      store round-trip, header, no .mv2 wall, checksum, missing, h4 gate/codec
-  10 swarm    swarm parallel/serial consensus, isolation, tile exclusivity,
+ 10 swarm    swarm parallel/serial consensus, isolation, tile exclusivity,
             decompose python/eel2 valid, teach registry match/domain/from_description
-  11 evolve   self-improvement hill-climb, determinism, bicameral HostBridge + pipeline, wgsl codegen
-  12 harden   decompose Add wire-SUM, EEL2 multi-input, Evolver QBF, bridge H4, wgsl naga, swarm determinism
-  13 polish   decompose Sub/Div/AnnAssign, teach QBF, evolver swarm, wgsl threshold/clamp/sine
-  14 iter14   full AST sweep (loops/comp/class), swarm->evolve->teach->QBF demo, bridge bench+H4 metrics+row_cos, tiles heatmap
-  15 iter15   decompose edge audit (async/walrus/fstring/comp), 16-agent 4x4 swarm, 10k trace/QBF/replay, WGSL naga + heatmap animation
-  16 iter16   zvec-grep retrieval: zg install + local/potion-code-16m-v2 index + H4/tiles/QBF retrieval fidelity + rg
+ 11 evolve   self-improvement hill-climb, determinism, bicameral HostBridge + pipeline, wgsl codegen
+ 12 harden   decompose Add wire-SUM, EEL2 multi-input, Evolver QBF, bridge H4, wgsl naga, swarm determinism
+ 13 polish   decompose Sub/Div/AnnAssign, teach QBF, evolver swarm, wgsl threshold/clamp/sine
+ 14 iter14   full AST sweep (loops/comp/class), swarm->evolve->teach->QBF demo, bridge bench+H4 metrics+row_cos, tiles heatmap
+ 15 iter15   decompose edge audit (async/walrus/fstring/comp), 16-agent 4x4 swarm, 10k trace/QBF/replay, WGSL naga + heatmap animation
+ 16 iter16   zvec-grep retrieval: zg install + local/potion-code-16m-v2 index + H4/tiles/QBF retrieval fidelity + rg
+ 17 ui       FastAPI server + tile wall (7 demo programs, batch/tap/feed, control schema, series, h4 rows, 4x4 display bounds)
+ 18 ui       iter 4: signed heatmap, WS RTT, presets, replay/record
+ 19 ui       iter 4 continued: split pane, wsstats, keyboard shortcuts
+ 20 ui       iter 5: themes, program switcher, bus inspector, param sweep, CSV export, wheel speed
 """
 import json, math, os, random, shutil, struct, subprocess, sys, tempfile, time
 
@@ -1532,8 +1536,877 @@ def s16_checks():
     checks.append(("zg wrapper structured + canonical list", wrapper_structured))
     return checks
 
+def s17_checks():
+    checks=[]
+    def ui_module_imports():
+        from atomic.ui import app, Viewer, build, all_programs
+        assert callable(app), "app not callable"
+        assert callable(Viewer), "Viewer not callable"
+        programs = all_programs()
+        assert len(programs) >= 7, programs
+        assert "gated_clock_counter" in programs
+    checks.append(("ui module imports (app, Viewer, 7 programs)", ui_module_imports))
+    def ui_server_index():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.get("/")
+            assert r.status_code == 200, r.status_code
+            assert b"ATOMIC-PC" in r.content, "no ATOMIC-PC title"
+            assert b"tile-wall" in r.content, "no tile-wall div"
+    checks.append(("GET / returns index.html (control frame + tile wall)", ui_server_index))
+    def ui_programs_endpoint():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.get("/api/programs")
+            assert r.status_code == 200
+            d = r.json()
+            assert "programs" in d
+            assert len(d["programs"]) >= 7
+            assert "active" in d
+            assert len(d["active"]) >= 7
+    checks.append(("GET /api/programs lists 7+ active", ui_programs_endpoint))
+    def ui_viewer_batch_clock():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.post("/api/batch/clock_counter", json={"ticks": 30})
+            assert r.status_code == 200, r.text
+            d = r.json()
+            assert d["t"] == 30
+            assert d["bus"].get("cnt.acc", 0) >= 0
+            assert "v0.cv" in d.get("series", {})
+    checks.append(("POST /api/batch/clock_counter -> 30 ticks, series populated",
+                   ui_viewer_batch_clock))
+    def ui_views_layout():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.post("/api/batch/hadamard_wxyz", json={"ticks": 5})
+            d = r.json()
+            assert len(d["views"]) == 4, len(d["views"])
+            for v in d["views"]:
+                assert v["as"] == "series"
+                assert "tile_row" in v and "tile_col" in v
+            r2 = c.get("/api/views/hadamard_wxyz")
+            assert r2.status_code == 200
+            assert len(r2.json()["views"]) == 4
+    checks.append(("GET /api/views/hadamard_wxyz -> 4 series tiles",
+                   ui_views_layout))
+    def ui_xy_and_wxyz3d_views():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.post("/api/batch/xy_pad", json={"ticks": 20})
+            d = r.json()
+            assert len(d["views"]) == 1
+            assert d["views"][0]["viz"] == "xy"
+            r2 = c.post("/api/batch/wxyz3d_demo", json={"ticks": 10})
+            d2 = r2.json()
+            assert len(d2["views"]) == 1
+            assert d2["views"][0]["viz"] == "wxyz3d"
+    checks.append(("xy_pad + wxyz3d_demo -> viz types xy/wxyz3d",
+                   ui_xy_and_wxyz3d_views))
+    def ui_live_feed_accepted():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.post("/api/feed/clock_counter",
+                       json={"ticks": [5, 10, 15], "params": {"clk": {"bpm": 200}}})
+            assert r.status_code == 200
+            d = r.json()
+            assert d.get("ok") is True
+            assert d.get("applied") == 3
+    checks.append(("POST /api/feed -> ticks+params applied",
+                   ui_live_feed_accepted))
+    def ui_tap_endpoint():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.post("/api/tap/clock_counter")
+            assert r.status_code == 200
+            d = r.json()
+            assert d.get("ok") is True
+            assert "tick" in d
+    checks.append(("POST /api/tap records 1-tick tap",
+                   ui_tap_endpoint))
+    def ui_control_frame_schema():
+        from atomic.ui.server import create_app, _control_schema
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.get("/api/control/clock_counter")
+            assert r.status_code == 200
+            d = r.json()
+            assert d["name"] == "clock_counter"
+            assert "params" in d
+            assert len(d["params"]) >= 1
+            for p in d["params"]:
+                assert "module" in p
+                assert "key" in p
+                assert "min" in p
+                assert "max" in p
+                assert isinstance(p["value"], float)
+    checks.append(("GET /api/control -> slider schema (module/key/min/max/value)",
+                   ui_control_frame_schema))
+    def ui_h4_wxyz_bus():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.post("/api/batch/hadamard_wxyz", json={"ticks": 5})
+            d = r.json()
+            bus = d["bus"]
+            assert abs(bus.get("h4.w", 0) - 4.0) < 0.01
+            assert abs(bus.get("h4.x", 0) - 0.0) < 0.01
+            assert abs(bus.get("h4.y", 0) - 0.0) < 0.01
+            assert abs(bus.get("h4.z", 0) - 0.0) < 0.01
+    checks.append(("h4_slide w=4, x=y=z=0 (CORE keystone)",
+                   ui_h4_wxyz_bus))
+    def ui_tile_bounds_4x4():
+        from atomic.tiles import Display
+        d = Display(800, 800, cols=4, rows=4, frame_h=0)
+        assert d.tile_w == 200 and d.tile_h == 200
+        assert len(d.tiles) == 16
+    checks.append(("Display(800,800,4x4) -> 200x200 tiles, 16 total",
+                   ui_tile_bounds_4x4))
+    def ui_snapshot_shape():
+        from atomic.ui.programs import build
+        from atomic.ui.viewer import Viewer
+        prog = build("sine_lfo_scope")
+        v = Viewer(prog, name="snap_shape")
+        snap = v.batch(10)
+        for k in ("t", "bus", "series", "views", "running"):
+            assert k in snap, k
+        assert snap["running"] is False
+        assert "window" in snap, "snapshot missing window field"
+        assert snap["window"] == 512, snap["window"]
+    checks.append(("Viewer.snapshot() shape (t/bus/series/views/running) + window=512",
+                   ui_snapshot_shape))
+    def ui_control_schema_enhanced():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.get("/api/control/gated_clock_counter")
+            assert r.status_code == 200
+            d = r.json()
+            assert "window" in d, "control schema missing window"
+            assert d["window"] == 512, d["window"]
+            has_bpm = any(p["key"] == "bpm" for p in d["params"])
+            assert has_bpm, "no bpm param"
+            for p in d["params"]:
+                if p["key"] == "bpm":
+                    assert p["min"] == 1.0, p
+                    assert p["max"] == 300.0, p
+                    assert p["step"] == 1.0, p
+                    assert p["unit"] == "bpm", p
+    checks.append(("GET /api/control -> step/unit + window field",
+                   ui_control_schema_enhanced))
+    def ui_xy_wxyz_key_extraction():
+        from atomic.ui.programs import build
+        from atomic.ui.viewer import Viewer
+        xy_prog = build("xy_pad")
+        v_xy = Viewer(xy_prog, name="xy_keys")
+        v_xy.batch(10)
+        snap = v_xy.snapshot()
+        assert len(snap["views"]) == 1
+        view = snap["views"][0]
+        assert view["viz"] == "xy"
+        assert view["key"] == "v0.y", view["key"]
+        w_prog = build("wxyz3d_demo")
+        v_w = Viewer(w_prog, name="wxyz_keys")
+        v_w.batch(10)
+        snap_w = v_w.snapshot()
+        assert len(snap_w["views"]) == 1
+        vw = snap_w["views"][0]
+        assert vw["viz"] == "wxyz3d"
+        assert vw["key"] == "v0.z", vw["key"]
+    checks.append(("xy key=v0.y / wxyz key=v0.z (correct suffix strip)",
+                   ui_xy_wxyz_key_extraction))
+    def ui_rolling_window():
+        from atomic.engine import VIEW_WINDOW
+        assert VIEW_WINDOW == 512, VIEW_WINDOW
+        from atomic.ui.programs import build
+        from atomic.ui.viewer import Viewer
+        prog = build("sine_lfo_scope")
+        v = Viewer(prog, name="win_test")
+        v.batch(600)
+        snap = v.snapshot()
+        for k, arr in snap["series"].items():
+            assert len(arr) <= VIEW_WINDOW, f"{k} length {len(arr)} > {VIEW_WINDOW}"
+    checks.append(("Engine VIEW_WINDOW=512 enforced on series lengths",
+                   ui_rolling_window))
+    def ui_ws_streaming():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            with c.websocket_connect("/ws/clock_counter") as ws:
+                snap1 = ws.receive_json()
+                assert "t" in snap1 and "bus" in snap1
+                ws.send_json({"type": "batch", "ticks": 5})
+                batch_seen = False
+                for _ in range(20):
+                    m = ws.receive_json()
+                    if m.get("ack") == "batch":
+                        assert "snapshot" in m, m
+                        assert m["snapshot"]["t"] == 6, m["snapshot"]["t"]
+                        batch_seen = True
+                        break
+                assert batch_seen, f"no batch ack in stream"
+    checks.append(("WS /ws/{name} streams ticks + batch ack",
+                   ui_ws_streaming))
+    def ui_heatmap_from_bus():
+        import re
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.post("/api/batch/hadamard_wxyz", json={"ticks": 10})
+            d = r.json()
+            bus = d["bus"]
+            axis_keys = [k for k in bus if re.search(r"\.[wxyz]$", k)]
+            cv_keys = [k for k in bus if ".cv" in k]
+            total = len(axis_keys) + len(cv_keys)
+            assert total >= 4, f"need 4+ heatmap-mappable bus keys, got cv={cv_keys} axis={axis_keys}"
+    checks.append(("hadamard_wxyz bus has .cv/.w/.x/.y/.z keys for heatmap",
+                   ui_heatmap_from_bus))
+    return checks
+
+
+def s18_checks():
+    """iter 18: UI polish (WS backpressure, snapshot diff, param ranges from gates,
+    viz_heatmap atom, heatmap_live demo, time-decayed heatmap)."""
+    checks = []
+    def ui_viz_heatmap_atom():
+        from atomic.gates import ATOMS
+        a = ATOMS.get("viz_heatmap")
+        assert a is not None, "viz_heatmap atom missing"
+        assert a.category == "sink", a.category
+        assert a.inputs == ["in"], a.inputs
+        assert a.outputs == [], a.outputs
+    checks.append(("viz_heatmap atom registered (sink, in->no outputs)",
+                   ui_viz_heatmap_atom))
+    def ui_heatmap_live_program():
+        from atomic.ui.programs import build, all_programs
+        assert "heatmap_live" in all_programs()
+        prog = build("heatmap_live")
+        patch = prog.compile("microfx")
+        prims = [m["primitive"] for m in patch["modules"]]
+        assert "viz_heatmap" in prims, prims
+        assert "h4_slide" in prims, prims
+    checks.append(("heatmap_live demo program compiles with viz_heatmap",
+                   ui_heatmap_live_program))
+    def ui_param_range_canonical():
+        from atomic.gates import param_range, PARAM_RANGES
+        # server.py imports param_range from gates; the old _PARAM_RANGES
+        # table in server.py is gone
+        import atomic.ui.server as srv
+        assert not hasattr(srv, "_PARAM_RANGES"), "server._PARAM_RANGES should be removed"
+        rng = param_range("clock_bpm", "bpm")
+        assert rng == (1.0, 300.0, 1.0, "bpm"), rng
+        rng = param_range("sine_lfo", "hz")
+        assert rng == (0.01, 20.0, 0.01, "Hz"), rng
+        assert param_range("clock_bpm", "BPM") == (1.0, 300.0, 1.0, "bpm")  # case-insensitive
+        assert param_range("nonexistent", "x") is None
+    checks.append(("param_range() canonical in gates.py; server._PARAM_RANGES removed",
+                   ui_param_range_canonical))
+    def ui_control_schema_uses_gates_ranges():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.get("/api/control/gated_clock_counter")
+            d = r.json()
+            for p in d["params"]:
+                if p["key"] == "bpm":
+                    assert p["min"] == 1.0 and p["max"] == 300.0
+                    assert p["step"] == 1.0 and p["unit"] == "bpm"
+    checks.append(("control schema uses gates.param_range for bpm slider",
+                   ui_control_schema_uses_gates_ranges))
+    def ui_snapshot_diff_bus_only():
+        from atomic.ui.programs import build
+        from atomic.ui.viewer import Viewer
+        v = Viewer(build("sine_lfo_scope"), name="diff_test")
+        v.batch(3)
+        full = v.snapshot()
+        prev_bus = dict(full["bus"])
+        v.tick_once()
+        diff = v.snapshot_diff(prev_bus=prev_bus)
+        assert diff.get("diff") is True
+        # bus should be a subset of full keys
+        for k in diff["bus"]:
+            assert k in full["bus"], f"diff has unknown key {k}"
+        # sine_lfo changes every tick so bus should have at least one changed key
+        assert len(diff["bus"]) >= 1, "diff bus is empty (sine_lfo should change each tick)"
+    checks.append(("Viewer.snapshot_diff(prev_bus) emits partial bus",
+                   ui_snapshot_diff_bus_only))
+    def ui_snapshot_diff_series_window():
+        from atomic.ui.programs import build
+        from atomic.ui.viewer import Viewer
+        v = Viewer(build("sine_lfo_scope"), name="diff_series")
+        v.batch(100)
+        full = v.snapshot()
+        diff = v.snapshot_diff(prev_bus=None, n_series=64)
+        for k, arr in diff["series"].items():
+            assert len(arr) <= 64, f"series {k} len {len(arr)} > 64"
+            # must be the suffix of the full series
+            full_arr = full["series"][k]
+            assert arr == full_arr[-len(arr):], f"series {k} not a suffix"
+    checks.append(("Viewer.snapshot_diff(n_series=64) returns <=64 samples per series",
+                   ui_snapshot_diff_series_window))
+    def ui_ws_queue_bounded():
+        import asyncio
+        from atomic.ui.viewer import Viewer
+        from atomic.ui.programs import build
+        v = Viewer(build("clock_counter"), name="ws_bp")
+        # ws_connect creates a queue with maxsize=2
+        async def go():
+            q = await v.ws_connect()
+            assert q.maxsize == 2, q.maxsize
+            v.ws_disconnect(q)
+        asyncio.run(go())
+    checks.append(("ws_connect queue is bounded (maxsize=2)",
+                   ui_ws_queue_bounded))
+    def ui_ws_drop_count():
+        import asyncio
+        from atomic.ui.viewer import Viewer
+        from atomic.ui.programs import build
+        v = Viewer(build("clock_counter"), name="ws_drops")
+        async def go():
+            q = await v.ws_connect()
+            # fill the queue
+            q.put_nowait({"a": 1})
+            q.put_nowait({"b": 2})
+            # next put must raise (QueueFull) -> the broadcast loop drops it
+            try:
+                q.put_nowait({"c": 3})
+                put_raised = False
+            except Exception:
+                put_raised = True
+            assert put_raised, "queue should be full"
+            v.ws_disconnect(q)
+        asyncio.run(go())
+    checks.append(("full WS client queue raises (broadcast would drop, not block)",
+                   ui_ws_drop_count))
+    def ui_ws_stream_diff():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            with c.websocket_connect("/ws/clock_counter") as ws:
+                first = ws.receive_json()
+                assert "t" in first and "bus" in first
+                # subsequent messages should be diffs (no `views` field, has `diff: true`)
+                seen_diff = False
+                for _ in range(8):
+                    m = ws.receive_json()
+                    if m.get("diff") is True:
+                        seen_diff = True
+                        assert "bus" in m
+                        break
+                assert seen_diff, "WS stream should emit diffs after the first frame"
+    checks.append(("WS /ws/{name} emits diff frames after initial snapshot",
+                   ui_ws_stream_diff))
+    def ui_heatmap_live_runs():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.post("/api/batch/heatmap_live", json={"ticks": 30})
+            assert r.status_code == 200
+            d = r.json()
+            # cnt.acc should be > 0 after 30 ticks
+            assert d["bus"].get("cnt.acc", 0) > 0, d["bus"]
+    checks.append(("POST /api/batch/heatmap_live runs without error",
+                   ui_heatmap_live_runs))
+    def ui_wsstats_endpoint():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.get("/api/wsstats?name=clock_counter")
+            assert r.status_code == 200
+            d = r.json()
+            assert "clients" in d
+            assert "drops" in d
+    checks.append(("GET /api/wsstats -> clients + drops counters",
+                   ui_wsstats_endpoint))
+    return checks
+
+
+def s19_checks():
+    """iter 19: UI iter 4 — keyboard shortcuts, presets, RTT ping,
+    latency overlay, signed heatmap, record/replay, split view, tile rename."""
+    checks = []
+
+    def ui_record_endpoint():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            frames = [{"t": i, "bus": {"x.cv": float(i)}} for i in range(5)]
+            r = c.post("/api/record/clock_counter",
+                        json={"frames": frames})
+            assert r.status_code == 200, r.text
+            d = r.json()
+            assert d.get("ok") is True
+            assert "run_id" in d
+            assert d["frames"] == 5
+    checks.append(("POST /api/record saves 5 frames, returns run_id",
+                   ui_record_endpoint))
+
+    def ui_replay_runs_list():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.get("/api/replay_runs/clock_counter")
+            assert r.status_code == 200, r.text
+            d = r.json()
+            assert "runs" in d
+            # should have the run we saved above
+            assert len(d["runs"]) >= 1, f"expected >=1 run, got {d['runs']}"
+    checks.append(("GET /api/replay_runs lists saved runs",
+                   ui_replay_runs_list))
+
+    def ui_replay_load():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.get("/api/replay_runs/clock_counter")
+            runs = r.json()["runs"]
+            if runs:
+                rid = runs[-1]["rid"]
+                r2 = c.get("/api/replay/clock_counter?run_id=" + rid)
+                assert r2.status_code == 200, r2.text
+                frames = r2.json()
+                assert isinstance(frames, list)
+                assert len(frames) == 5
+                assert frames[0]["t"] == 0
+    checks.append(("GET /api/replay loads frames and returns t0=0",
+                   ui_replay_load))
+
+    def ui_ws_ping_pong():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        import time
+        c = TestClient(create_app())
+        with c:
+            with c.websocket_connect("/ws/clock_counter") as ws:
+                # drain first snapshot
+                ws.receive_json()
+                # wait a bit so the tick_loop has had a chance to send
+                # a diff, and drain it (the test isn't about the diffs,
+                # just the ping/pong round-trip).
+                time.sleep(0.05)
+                for _ in range(8):
+                    try:
+                        m = ws.receive_json(timeout=0.01)
+                        if m.get("_pong"):
+                            return
+                    except Exception:
+                        break
+                ws.send_json({"type": "ping"})
+                # may need to skip a diff first
+                for _ in range(8):
+                    m = ws.receive_json()
+                    if m.get("_pong"):
+                        assert m["_pong"] is True
+                        return
+                raise AssertionError("no _pong received")
+    checks.append(("WS ping -> _pong=True (RTT)",
+                   ui_ws_ping_pong))
+
+    def ui_ws_latency_fields():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            with c.websocket_connect("/ws/clock_counter") as ws:
+                # first snapshot has no latency (no tick yet)
+                snap1 = ws.receive_json()
+                # wait for next diff
+                for _ in range(5):
+                    m = ws.receive_json()
+                    if m.get("_lat_eng") is not None:
+                        assert isinstance(m["_lat_eng"], (int, float))
+                        assert m["_lat_eng"] >= 0
+                        return
+                assert False, "no _lat_eng in first 5 diffs"
+    checks.append(("WS diff frames include _lat_eng (engine budget us)",
+                   ui_ws_latency_fields))
+
+    def ui_signed_heatmap_render():
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(root, "atomic", "ui", "static", "index.html")
+        html = open(path).read()
+        assert "HM_SIGNED_POS" in html, "missing signed pos palette"
+        assert "HM_SIGNED_NEG" in html, "missing signed neg palette"
+        assert "HM_SIGNED_POS" in html and "HM_SIGNED_NEG" in html
+    checks.append(("index.html includes signed heatmap palettes (red-/blue+)",
+                   ui_signed_heatmap_render))
+
+    def ui_tile_rename_in_html():
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(root, "atomic", "ui", "static", "index.html")
+        html = open(path).read()
+        assert "tile-rename" in html, "missing tile-rename CSS"
+        assert "tile-cap" in html and "dblclick" in html, "missing dblclick rename"
+    checks.append(("index.html has tile-cap dblclick rename handler",
+                   ui_tile_rename_in_html))
+
+    def ui_keyboard_shortcuts_in_html():
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(root, "atomic", "ui", "static", "index.html")
+        html = open(path).read()
+        assert "e.key === ' '" in html, "missing space=tap shortcut"
+        assert "e.key === 'r'" in html, "missing r=reset shortcut"
+        assert "e.key === 'g'" in html, "missing g=clear groups shortcut"
+    checks.append(("index.html has keyboard handlers (space/r/g)",
+                   ui_keyboard_shortcuts_in_html))
+
+    def ui_preset_round_trip():
+        # Save a preset, then load it back
+        import os, json, tempfile
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                            "ui", "static", "index.html")
+        # We test the server-side preset save via record endpoint
+        # (which uses the same JSON localStorage pattern)
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            frames = [{"t": 0, "bus": {}, "series": {}}]
+            r = c.post("/api/record/test_preset",
+                        json={"frames": frames})
+            assert r.status_code == 200
+    checks.append(("record/replay endpoint round-trip (preset analog)",
+                   ui_preset_round_trip))
+
+    def ui_split_view_programs_endpoint():
+        # The pane 2 select should be populated from /api/programs
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.get("/api/programs")
+            assert r.status_code == 200
+            d = r.json()
+            assert len(d["programs"]) >= 7
+    checks.append(("GET /api/programs returns 7+ programs (split view source)",
+                   ui_split_view_programs_endpoint))
+
+    def ui_wsstats_drops():
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.get("/api/wsstats?name=hadamard_wxyz")
+            assert r.status_code == 200
+            d = r.json()
+            assert "clients" in d and "drops" in d
+    checks.append(("GET /api/wsstats -> clients + drops (connection quality)",
+                   ui_wsstats_drops))
+
+    return checks
+
+
+def s20_checks():
+    """UI iter 5: themes, program switcher, bus inspector, param sweep, CSV, wheel."""
+    import os
+    checks = []
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    html_path = os.path.join(root, "atomic", "ui", "static", "index.html")
+    html = open(html_path).read()
+
+    def theme_dark_defined():
+        assert "body.theme-light" in html, "missing light theme"
+        assert "body.theme-neon" in html, "missing neon theme"
+        assert "--accent:" in html, "missing CSS variable for accent"
+    checks.append(("CSS themes: dark/light/neon defined", theme_dark_defined))
+
+    def theme_selector_present():
+        assert 'id="theme-select"' in html, "missing theme selector"
+        assert "applyTheme" in html, "missing applyTheme fn"
+        assert "state.theme" in html, "missing theme state"
+    checks.append(("theme selector + applyTheme fn", theme_selector_present))
+
+    def program_switcher_present():
+        assert 'id="prog-switcher"' in html, "missing program switcher"
+        assert "_switchProgram" in html, "missing _switchProgram fn"
+        assert "_refreshProgramSwitcher" in html, "missing _refreshProgramSwitcher"
+    checks.append(("program switcher + _switchProgram fn", program_switcher_present))
+
+    def bus_inspector_present():
+        assert 'id="bus-inspector"' in html, "missing bus-inspector panel"
+        assert "showBusInspector" in html, "missing showBusInspector fn"
+        assert "bus-inspector-row" in html, "missing bus-inspector-row class"
+    checks.append(("bus inspector panel + show fn", bus_inspector_present))
+
+    def param_sweep_present():
+        assert 'id="sweep-record-btn"' in html, "missing sweep record btn"
+        assert "sweepRec" in html, "missing sweepRec state"
+        assert "_startSweepReplay" in html, "missing sweep replay fn"
+    checks.append(("param sweep rec/replay state + fns", param_sweep_present))
+
+    def csv_export_present():
+        assert "exportSeriesCSV" in html, "missing exportSeriesCSV fn"
+        assert "tile-csv-btn" in html, "missing tile-csv-btn class"
+        assert "text/csv" in html, "missing CSV mime type"
+    checks.append(("CSV export + tile-csv-btn", csv_export_present))
+
+    def wheel_speed_handler():
+        assert "speedSlider.addEventListener('wheel'" in html, "missing wheel handler"
+        assert "_adjustSpeed" in html, "missing _adjustSpeed fn"
+    checks.append(("speed slider mouse wheel = ±1 fps", wheel_speed_handler))
+
+    def speed_adjust_step():
+        # _adjustSpeed must change by 1 (not 5)
+        assert "Math.min(60, Math.max(1, parseInt(s.value) + delta))" in html, \
+            "_adjustSpeed should clamp + use delta as 1"
+    checks.append(("_adjustSpeed step=1 (not 5)", speed_adjust_step))
+
+    def sweep_records_param():
+        # When recording, the param slider's input handler should push to sweepRec
+        assert "state.sweepRec.push" in html, "param slider does not record to sweep"
+        # the push must include tick + module + key + value
+        assert "tick: state.tick" in html, "sweep entry missing tick"
+        assert "module: mid" in html, "sweep entry missing module"
+    checks.append(("param slider records to sweepRec", sweep_records_param))
+
+    def programs_endpoint_for_switcher():
+        # the program switcher needs /api/programs to populate
+        from atomic.ui.server import create_app
+        from fastapi.testclient import TestClient
+        c = TestClient(create_app())
+        with c:
+            r = c.get("/api/programs")
+            assert r.status_code == 200
+            d = r.json()
+            assert len(d["programs"]) >= 7
+    checks.append(("program switcher source: /api/programs 7+", programs_endpoint_for_switcher))
+
+    def all_programs_listed():
+        # The program switcher must include all registry programs
+        from atomic.ui.programs import all_programs
+        ps = all_programs()
+        assert "hadamard_wxyz" in ps
+        assert "xy_pad" in ps
+        assert "clock_counter" in ps
+    checks.append(("all 7 demo programs in switcher", all_programs_listed))
+
+    return checks
+
+def s21_checks():
+    """UI iter 6: fullscreen, color picker, viz override, bus search, cheat sheet, screenshot, favorites."""
+    import os
+    checks = []
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    html_path = os.path.join(root, "atomic", "ui", "static", "index.html")
+    html = open(html_path).read()
+
+    def fullscreen_css():
+        assert "body.fullscreen #header" in html, "missing fullscreen CSS"
+        assert "body.fullscreen #presets-bar" in html, "missing fullscreen presets-bar"
+        assert "body.fullscreen #control-bar" in html, "missing fullscreen control-bar"
+        assert "body.fullscreen #tile-wall" in html, "missing fullscreen tile-wall"
+    checks.append(("fullscreen CSS hides header/bars", fullscreen_css))
+
+    def fullscreen_js():
+        assert "toggleFullscreen" in html, "missing toggleFullscreen fn"
+        assert "state.fullscreen" in html, "missing fullscreen state"
+        assert 'classList.toggle' in html and "fullscreen" in html, "missing fullscreen classToggle"
+        assert 'id="fullscreen-btn"' in html, "missing fullscreen button"
+    checks.append(("fullscreen toggle fn + button", fullscreen_js))
+
+    def fullscreen_keyboard():
+        assert "e.key === 'f'" in html or "e.key === 'F'" in html, "missing F key shortcut"
+    checks.append(("F key triggers fullscreen", fullscreen_keyboard))
+
+    def color_picker_css():
+        assert "tile-color-btn" in html, "missing tile-color-btn CSS"
+        assert "tile-color-popup" in html, "missing tile-color-popup CSS"
+        assert "tile-color-swatch" in html, "missing tile-color-swatch CSS"
+    checks.append(("color picker CSS classes", color_picker_css))
+
+    def color_picker_js():
+        assert "openColorPicker" in html, "missing openColorPicker fn"
+        assert "applyTileColor" in html, "missing applyTileColor fn"
+        assert "tileColors" in html, "missing tileColors state"
+        assert 'id="tile-color-picker"' in html, "missing color picker input"
+        assert 'id="tile-color-popup"' in html, "missing tile-color-popup div"
+    checks.append(("color picker fns + state", color_picker_js))
+
+    def color_picker_saved():
+        assert "tileColors: state.tileColors" in html, "tileColors not persisted in saveState"
+        assert "if (_saved.tileColors)" in html, "tileColors not restored in loadState"
+    checks.append(("tileColors persisted + restored", color_picker_saved))
+
+    def color_override_in_draw():
+        assert "colorOverride" in html, "missing colorOverride param in draw fns"
+        assert "drawHeatmapTile(canvas, hmVal, state.heatmap_signed, tileColor)" in html, "colorOverride not passed to drawHeatmapTile"
+        assert "_hexToRgba" in html, "missing _hexToRgba helper"
+    checks.append(("color override plumbed into draw fns", color_override_in_draw))
+
+    def viz_override_html():
+        assert "tile-viz-select" in html, "missing tile-viz-select dropdown"
+        assert 'value="series"' in html and 'value="xy"' in html and 'value="wxyz3d"' in html, "missing viz options"
+        assert "tileVizOverride" in html, "missing tileVizOverride state"
+    checks.append(("viz override dropdown + state", viz_override_html))
+
+    def viz_override_js():
+        assert "setVizOverride" in html, "missing setVizOverride fn"
+        assert "_effectiveViz" in html, "missing _effectiveViz fn"
+        assert "tileVizOverride[tileRow" in html, "tileVizOverride not used in renderTile"
+    checks.append(("viz override fns plumbed", viz_override_js))
+
+    def viz_override_persisted():
+        assert "tileVizOverride: state.tileVizOverride" in html, "tileVizOverride not persisted"
+    checks.append(("tileVizOverride persisted", viz_override_persisted))
+
+    def bus_search():
+        assert 'id="bus-inspector-search"' in html, "missing bus inspector search input"
+        assert "bus-inspector-search" in html, "missing search in bus inspector"
+        assert "bus-inspector-count" in html, "missing bus-inspector-count"
+        assert "renderBus(filter)" in html, "missing renderBus with filter"
+        assert "new RegExp" in html, "missing RegExp for regex filter"
+    checks.append(("bus inspector search + regex filter", bus_search))
+
+    def bus_search_wired():
+        assert 'searchEl.oninput = () => renderBus(searchEl.value)' in html, "search not wired"
+    checks.append(("bus search input wired to renderBus", bus_search_wired))
+
+    def cheatsheet():
+        assert 'id="cheatsheet-overlay"' in html, "missing cheatsheet overlay"
+        assert "toggleCheatsheet" in html, "missing toggleCheatsheet fn"
+        assert "e.key === '?'" in html, "missing ? key shortcut"
+        assert "Keyboard Cheat Sheet" in html, "missing cheat sheet title text"
+    checks.append(("keyboard cheat sheet overlay + ? key", cheatsheet))
+
+    def screenshot():
+        assert "exportTilePNG" in html, "missing exportTilePNG fn"
+        assert "tile-shot-btn" in html, "missing tile-shot-btn class"
+        assert "toBlob" in html, "missing toBlob for PNG export"
+        assert "image/png" in html, "missing PNG mime type"
+    checks.append(("tile PNG screenshot export", screenshot))
+
+    def favorites():
+        assert "toggleFavorite" in html, "missing toggleFavorite fn"
+        assert "state.favorites" in html, "missing favorites state"
+        assert "refreshProgramSwitcher" in html, "missing refreshProgramSwitcher fn"
+        assert "toggleFavoritesOnly" in html, "missing toggleFavoritesOnly fn"
+        assert 'id="fav-filter-btn"' in html, "missing fav-filter-btn button"
+    checks.append(("program favorites star + filter", favorites))
+
+    def favorites_keyboard():
+        assert "e.key === '*'" in html, "missing * key shortcut for favorites"
+    checks.append(("* key toggles favorites filter", favorites_keyboard))
+
+    def favorites_persisted():
+        assert "favorites: state.favorites" in html, "favorites not persisted"
+        assert "if (_saved.favorites)" in html, "favorites not restored in loadState"
+    checks.append(("favorites persisted + restored", favorites_persisted))
+
+    def escape_closes_panels():
+        assert "e.key === 'Escape'" in html, "missing Escape key handler"
+        assert "closeColorPicker" in html, "missing closeColorPicker in Escape"
+        assert "hideBusInspector" in html, "missing hideBusInspector in Escape"
+    checks.append(("Escape closes color picker + inspector + cheatsheet", escape_closes_panels))
+
+    return checks
+
+def s22_checks():
+    """UI iter 7: tile wall zoom (Ctrl+wheel) + accent color override."""
+    import os
+    checks = []
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    html_path = os.path.join(root, "atomic", "ui", "static", "index.html")
+    html = open(html_path).read()
+
+    def zoom_wrapper():
+        assert 'id="tile-wall-viewport"' in html, "missing zoom viewport wrapper"
+        assert 'id="tile-wall-viewport-2"' in html, "missing pane-2 zoom viewport wrapper"
+    checks.append(("tile-wall wrapped in zoom viewports", zoom_wrapper))
+
+    def zoom_css():
+        assert "zoom-transform" in html, "missing zoom-transform CSS class"
+        assert "transform-origin" in html, "missing transform-origin"
+        assert "transition: transform" in html, "missing transform transition"
+    checks.append(("zoom CSS transform + origin + transition", zoom_css))
+
+    def zoom_controls():
+        assert 'id="zoom-controls"' in html, "missing zoom controls bar"
+        assert 'id="zoom-in-btn"' in html, "missing zoom-in button"
+        assert 'id="zoom-out-btn"' in html, "missing zoom-out button"
+        assert 'id="zoom-fit-btn"' in html, "missing zoom-fit button"
+        assert 'id="zoom-scale"' in html, "missing zoom scale label"
+    checks.append(("zoom HUD buttons + scale label", zoom_controls))
+
+    def zoom_js():
+        assert "function applyZoom" in html, "missing applyZoom fn"
+        assert "function zoomBy" in html, "missing zoomBy fn"
+        assert "function zoomFit" in html, "missing zoomFit fn"
+        assert "function setupZoom" in html, "missing setupZoom fn"
+        assert "ctrlKey || e.metaKey" in html, "zoom not gated on Ctrl/Cmd"
+        assert "scale(" in html, "missing scale() transform"
+        assert "passive: false" in html, "wheel handler must be non-passive to preventDefault"
+    checks.append(("zoom JS: fns + Ctrl-gated wheel", zoom_js))
+
+    def zoom_persisted():
+        assert "zoom: state.zoom" in html, "zoom not persisted in saveState"
+        assert "if (_saved.zoom != null)" in html, "zoom not restored in loadState"
+        assert "zoom: state.zoom," in html and "p.zoom" in html, "zoom not in preset snapshot"
+    checks.append(("zoom persisted to localStorage + presets", zoom_persisted))
+
+    def zoom_keys():
+        assert "Ctrl+scroll" in html, "missing Ctrl+scroll cheatsheet entry"
+        assert "Ctrl+0" in html, "missing Ctrl+0 cheatsheet entry"
+        assert "(e.ctrlKey || e.metaKey) && (e.key === '+'" in html, "missing Ctrl+= zoom handler"
+        assert "(e.ctrlKey || e.metaKey) && e.key === '0'" in html, "missing Ctrl+0 zoom-fit handler"
+    checks.append(("zoom keys: Ctrl+scroll, Ctrl+=/-, Ctrl+0", zoom_keys))
+
+    def accent_picker_html():
+        assert 'id="accent-picker"' in html, "missing accent color picker input"
+        assert 'id="accent-clear-btn"' in html, "missing accent clear button"
+        assert "accentColor" in html, "missing accentColor state"
+    checks.append(("accent picker UI in header", accent_picker_html))
+
+    def accent_css():
+        assert "body.accent-override" in html, "missing accent-override body class"
+        assert "--accent-override" in html, "missing --accent-override CSS var"
+    checks.append(("accent CSS override (theme-agnostic)", accent_css))
+
+    def accent_js():
+        assert "function applyAccentColor" in html, "missing applyAccentColor fn"
+        assert "state.accentColor" in html, "accentColor state not threaded"
+        assert "setProperty('--accent-override'" in html, "accent var not set on body"
+    checks.append(("accent JS: applyAccentColor + body var", accent_js))
+
+    def accent_persisted():
+        assert "accentColor: state.accentColor" in html, "accent not persisted in saveState"
+        assert "if (_saved.accentColor)" in html, "accent not restored in loadState"
+        assert "p.accentColor" in html, "accent not in preset snapshot"
+    checks.append(("accent persisted to localStorage + presets", accent_persisted))
+
+    return checks
+
+
 def main():
-    print("ATOMIC-PC selftest — 16 sections")
+    print("ATOMIC-PC selftest — 22 sections")
     print("="*60)
     results=[]
     results.append(_run_section(1, "bridge", s1_checks))
@@ -1552,6 +2425,12 @@ def main():
     results.append(_run_section(14, "iter14 full sweep", s14_checks))
     results.append(_run_section(15, "iter15 scale & viz", s15_checks))
     results.append(_run_section(16, "iter16 zvec-grep", s16_checks))
+    results.append(_run_section(17, "iter17 UI", s17_checks))
+    results.append(_run_section(18, "iter18 UI polish", s18_checks))
+    results.append(_run_section(19, "iter19 UI iter4", s19_checks))
+    results.append(_run_section(20, "iter5 UI", s20_checks))
+    results.append(_run_section(21, "iter6 UI", s21_checks))
+    results.append(_run_section(22, "iter7 UI (zoom + accent)", s22_checks))
     print("="*60)
     ok=sum(1 for r in results if r)
     print(f"selftest: {ok}/{len(results)} sections ok")

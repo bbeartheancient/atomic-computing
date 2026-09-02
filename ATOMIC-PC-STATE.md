@@ -1393,4 +1393,276 @@ file (iteration log) + AGENTS.md verification counts + CORE retrieval refresh
 (if needed). Next turn (iter 18) executes git init + first commit upon
 operator approval, or proceeds to docs hardening if git is deferred.
 
-## Next iteration — iter 18: execute git init + first commit/push (or docs hardening if deferred)
+## Iter 18 (2026-09-02) — live demos + harness re-verification
+
+Goal: turn the harness into something an operator can run from the
+outside. Five end-to-end scripts under `examples/`, each exercising
+one slice of the goal chain, plus a hot-patch to AGENTS.md to record
+them.
+
+  1. `examples/qbf_persistence_round_trip.py` — record a 60-tick trace,
+     archive to a fresh `.qbf` shard under `~/.runtime/atomic_qbf`,
+     then verify: manifest == snapshot tick count, load_run() round-
+     trips every frame, export_run() == trace.export() (the
+     dma_trace twin shape), replay_run() drives a fresh engine with
+     bit-identical final bus, flow_trace() re-snapshots equal.
+  2. `examples/hadamard_wxyz_scope.py` — const(0.5) -> h4_slide
+     splits into W/Z/Y/X (keystone H(4) gate), four viz_series sinks
+     populate a 4x4 Display(800x800, frame_h=80). Steady state is
+     W=2.0, Z=Y=X=0; cross-checked against hoa64.sylvester(4)
+     H @ (0.5,0.5,0.5,0.5) with atol 1e-9.
+  3. `examples/gated_clock_counter.py` — from_description() on the
+     "control" domain picks the seeded gated_clock_counter example
+     (clock_bpm@60 -> accum -> smooth -> viz_series). 90 ticks
+     yields two beats (ticks 30, 60) processed via 1-tick latency
+     so final acc=2.0; smooth alpha=0.1 converges to 1.94.
+  4. `examples/swarm_evolve_teach_demo.py` — wraps
+     `atomic.demo.swarm_evolve_teach_demo` and asserts parallel ==
+     serial determinism, evolution improves, registry persists to
+     .qbf and reloads, replay bit-identical.
+  5. `examples/heatmap_animation.py` — Display(3x3, 900x900) +
+     clock(120bpm) -> accum -> viz_series, trace recorded, then
+     `display.heatmap_animation(trace, port="acc", window=2)`
+     produces 16 per-tick heatmaps (window=2 over 32 ticks). Tile
+     (1,1) lights up last (the accum value normalises to 1.0).
+
+Subtleties surfaced & documented:
+  - `engine.run(ticks)["final"]` is a redundant alias for
+    `["bus"]`; the demos now read `["bus"]` to avoid the
+    same-key ambiguity.
+  - 1-tick input latency on the accum: a clock beat at tick N is
+    processed by accum on tick N+1, so 90 ticks of a 60bpm clock
+    shows acc=2, not 2 with one dropped.
+  - Trace frame `out_ports` keys are unprefixed ("acc" not
+    "cnt.acc"); `Display.heatmap_animation` accepts both, but the
+    unprefixed form is the canonical one to query.
+  - sensor is an inert host source in the harness (no setValue
+    path); use `const` or push via live feeds for deterministic
+    inputs. The selftest in s9 mirrors this.
+
+Verification (re-run this iter, all green):
+  - `python -m pytest tests -q`               170 passed
+  - `python -m atomic.selftest`               16/16 sections ok
+  - `python -m examples.qbf_persistence_round_trip`   ok
+  - `python -m examples.hadamard_wxyz_scope`          ok
+  - `python -m examples.gated_clock_counter`          ok
+  - `python -m examples.swarm_evolve_teach_demo`      ok
+  - `python -m examples.heatmap_animation`            ok
+
+Docs updates:
+  - `AGENTS.md` Map section: examples/ listed under local harness.
+  - This file: the iter 18 section above.
+
+Result: 5 live demos pass, harness still 170/170 + 16/16. Examples
+package is standalone (each `python -m examples.<name>` works; script
+form also works for the qbf one with explicit sys.path). No code
+changes to the harness itself.
+
+## Iteration 19 — UI tile wall (2026-09-02)
+
+UI goal: build `atomic/ui/` — the Python-side web UI for the 4x4
+tile wall + control frame. FastAPI on port 18094, HTML5 canvas
+rendering, WebSocket streaming.
+
+### What was built
+
+`atomic/ui/` module (new):
+  - `server.py`: FastAPI app with lifespan startup registering 7 demo
+    programs. REST endpoints: GET /, /run/<name>, /api/programs,
+    /api/control/<name>, /api/snapshot/<name>, /api/views/<name>,
+    POST /api/feed/<name>, /api/tap/<name>, /api/batch/<name>,
+    GET /api/stream/<name>; WS /ws/<name>.
+  - `viewer.py`: Viewer class wrapping Engine + program. batch(N),
+    tick_once(), snapshot(), apply_feed(), tap(), set_param().  Auto-
+    generates view layout for viz_* sinks.
+  - `programs.py`: 7 built-in demos (clock_counter, gated_clock_counter,
+    sine_lfo_scope, hadamard_wxyz, xy_pad, wxyz3d_demo, heatmap_demo).
+  - `static/index.html`: 4x4 canvas tile wall, control bar, WebSocket
+    client, heatmap/series/xy/wxyz3d renderers, param sliders, tap button.
+  - `__init__.py`: exports app, Viewer, build, run_server.
+
+`atomic/program.py` patch_views fix:
+  - `_patch_views(blocks)` auto-generates views for viz_series/viz_xy/
+    viz_wxyz3d when Program.views is empty (so Engine.series populates).
+  - `to_patch()` calls `_patch_views` when `self.views` is empty.
+
+`tests/test_ui.py` (new):
+  - 15 tests covering imports, programs, compile, view layout, batch
+    series, param feed, tap, tick_once, tile bounds, control schema,
+    server routes, all program batch, WS snapshot, feed, h4 rows.
+
+`atomic/selftest.py` section 17 (UI):
+  - 12 checks: module imports, index.html, programs endpoint, batch
+    clock, views layout, xy/wxyz3d viz types, live feed, tap,
+    control frame schema, h4 rows, tile bounds, snapshot shape.
+
+### Key findings
+
+- `@property` decorator needed on Viewer's `view_layout` (not a bare method)
+  or snapshot() sees the bound method object.
+- `_auto_register` was swallowing errors silently; added traceback + HTTPException.
+- FastAPI lifespan must be used (not on_event) since FastAPI 0.136.
+- Python `finally` runs AFTER the return expression is evaluated but
+  BEFORE the function exits — `finally: _running=False` followed by
+  `return self.snapshot()` meant snapshot saw `running=True`. Fixed by
+  separating `return self.snapshot()` from the try/finally block.
+- `viz_*` blocks produce no series in Engine without views entries in
+  the patch; auto-generated patch views fix this.
+- Port 18094 chosen (free, adjacent to fabric :18093).
+
+### Verification
+
+```
+python -m pytest tests/test_ui.py      # 15/15 ok
+python -m atomic.selftest             # 17/17 ok
+python -m pytest tests -q              # 185/185 ok (was 170)
+```
+
+Live server:
+```
+uvicorn atomic.ui:app --port 18094 --host 0.0.0.0
+http://localhost:18094/run/hadamard_wxyz
+```
+
+Docs updates:
+  - `AGENTS.md`: Map section adds `ui/` module description; Verify section
+    adds UI tile wall entry; Ports line updated to :18094.
+  - `atomic/selftest.py`: docstring 16->17 sections.
+  - `ATOMIC-PC-STATE.md`: this section.
+
+## Verified findings (iter 20, 2026-09-02) — UI iter 4: keyboard, presets, RTT, signed heatmap, record/replay, split view
+
+Goal 19 (operator): harden the UI tile wall into a real desktop-class
+operator surface. Every iter-4 todo now implemented end-to-end:
+
+- Keyboard shortcuts: space=tap, r=reset, +/-/=_adjustSpeed(+5/-5), g=clear groups.
+  Handlers ignore keystrokes when an INPUT/SELECT/TEXTAREA is focused.
+- Tile rename: dblclick any tile-cap to inline-edit the label; Enter/Esc
+  commit/blur. Saved per `(row,col)` in localStorage under `tile_names`.
+- Preset save/load: snapshot {groups, tile_names, program, params, speed}
+  into localStorage key `atomic_pc_presets`. Load re-applies (including
+  auto-switching to the preset's program). Delete removes the entry.
+- Record/Replay: live WS frames buffered up to 2000 ticks; on stop, POST
+  to `/api/record/{name}` which writes a .qbf shard under
+  `~/.runtime/atomic_qbf/ui_records/{name}.qbf`. Replay button GETs
+  `/api/replay/{name}?run_id=...` and redraws the frames at ~60fps.
+- Multi-program split view: SPLIT button toggles a second 4x4 tile wall
+  with a program selector; pane 2 has its own WS connection.
+- viz_heatmap signed: heatmap cells now store `{i, s}` (intensity, sign)
+  so cv values render red (s<0) or blue (s>0). Toggled via state.heatmap_signed.
+- Latency overlay: per-tick `_lat_eng` (engine budget) and `_lat_ws`
+  (send budget) emitted in WS diff frames; rendered in header as
+  `eng <N>us · ws <N>us` with running averages on the client.
+- Connection quality: WS ping/pong every 3s computes RTT; averaged over
+  last 10 samples; color-coded badge (good<30ms, fair<80ms, poor).
+  /api/wsstats already exposed clients + drops (iter 18).
+- Selftest: 11 new checks in section 19 covering record/replay endpoints,
+  RTT ping/pong, latency fields, signed-heatmap palette, tile-rename
+  dblclick, keyboard handler presence, split source programs, wsstats.
+
+Module additions:
+- `atomic/ui/qbf_records.py`: per-program .qbf shard (QBF1 header +
+  64-byte header pad, then length-prefixed run blobs). Each run is a
+  JSON {run_id, program, t0, tN, n_frames, ts, frames: [...]}. The shard
+  is the iter-4 record store; cheaper than QbfTraceStore (no per-frame
+  blobs, no FlowTrace envelope) because UI replay doesn't need
+  per-node per-tick state — only what the renderer consumed.
+- `atomic/ui/server.py`: WS handler now reads engine + ws latency via
+  `time.perf_counter()` and embeds in diffs (`_lat_eng` on first frame
+  per connection). `ping` msg echoed with `_pong: true`. New routes:
+  POST `/api/record/{name}` (save frames), GET `/api/replay_runs/{name}`
+  (list runs), GET `/api/replay/{name}?run_id=` (load frames).
+- `atomic/ui/viewer.py`: added `set_last_latency(eng_us, ws_us)` and
+  `last_latency` property so the tick_loop can persist measurements.
+- `atomic/ui/static/index.html`: rewritten with new header (RTT, latency
+  badges, REC/PLAY/SPLIT/Reset buttons), preset bar (Save/Load/Del +
+  select + name input), keyboard handler (skips input focus), second
+  tile wall (`#tile-wall-2`), tile-cap dblclick rename, signed-heatmap
+  palettes, _bus_to_heatmap_decayed (with `{i, s}` ring entries), pane
+  branch in `applySnapshot`/`renderTile`/`renderGroup`/`updateGroupBadges`,
+  per-pane `connectWS(name, pane)` + close/reconnect on split toggle,
+  WS message handling for `{type:'ping', _t}` (RTT).
+
+### Verification
+```
+python -m pytest tests -q              # 185/185 ok
+python -m atomic.selftest             # 19/19 sections, 175 checks ok
+```
+
+Section 19 (iter 4 UI): 11/11 — record endpoint, replay_runs list,
+replay load, ping/_pong, _lat_eng field, signed-heatmap palette,
+tile-rename dblclick, keyboard handlers (space/r/g), preset round-trip,
+split-view programs source, wsstats.
+
+Live server (UI tile wall, port 18094):
+```
+uvicorn atomic.ui:app --port 18094 --host 0.0.0.0
+http://<lan-ip>:18094/run/hadamard_wxyz
+```
+
+Docs updates:
+  - `AGENTS.md`: TODO list updated; iter 4 features referenced in
+    `Map` section's `ui/` bullet; `Verify` section now references
+    selftest 19/19 + 185 tests.
+  - `atomic/selftest.py`: docstring 17->18->19 sections; 175+ checks.
+  - `ATOMIC-PC-STATE.md`: this section.
+
+## Iter 21 (2026-09-02) — UI iter 7: tile wall zoom + accent color picker
+
+Goal: add two high-leverage UI polish features that unblock the operator's
+data-visualization workflow.
+
+### What was built
+
+Tile wall zoom — Ctrl+scroll / Ctrl+=/− / Ctrl+0:
+- Wrapped `#tile-wall` in `#tile-wall-viewport` (scrollable container, 4×4
+  grid centered within it); pane 2 gets `#tile-wall-viewport-2` wrapper.
+- CSS: `.zoom-transform` class with `transform: scale(N)`, `transform-origin:
+  center center`, `transition: transform 0.1s ease`.
+- `applyZoom()` sets scale/w/height on both tile-walls; `zoomBy(±0.1)` and
+  `zoomFit()`; `setupZoom()` wires wheel listener (Ctrl/Cmd+wheel only,
+  `passive: false` so `preventDefault` works), +/−/Fit buttons.
+- Bottom-center HUD bar: −/+/Fit buttons + zoom % label.
+- State field `state.zoom` (0.5–4.0, default 1.0); persisted to
+  `localStorage`; in preset `_currentSnapshot` + `_applyPreset`.
+
+Accent color override — color picker in header:
+- `<input type="color">` + Clear button next to theme-select in `#header`.
+- `applyAccentColor()` sets `document.body.style.setProperty('--accent-override',
+  color)` and toggles `accent-override` class; CSS `body.accent-override {
+  --accent: var(--accent-override); }` overrides theme var via specificity.
+- Persisted to `localStorage`; in presets; survives page reload; theme-aware.
+
+Keyboard shortcuts: Ctrl+= zoom-in, Ctrl+− zoom-out, Ctrl+0 fit; cheat
+sheet updated with Ctrl+scroll / Ctrl++/- / Ctrl+0 entries.
+
+### Key findings
+
+- Wheel event must be non-passive (`{ passive: false }`) to allow
+  `preventDefault()` — without it the browser consumes the event before JS.
+- Body-class specificity trick (`.accent-override { --accent: var(--accent-override) }`)
+  cleanly layers on top of all three theme classes without touching them.
+- Preset round-trip for zoom + accent: both fields added to `_currentSnapshot`
+  and `_applyPreset`; survives preset save/load/reload cycle.
+
+### Verification
+
+```
+/home/bbear/M1Multitronic/.venv-fabric/bin/python -m pytest tests -q
+  # 185/185 ok
+/home/bbear/M1Multitronic/.venv-fabric/bin/python -m atomic.selftest
+  # 22/22 sections, 10 new checks in s22 (zoom + accent)
+  # Section 22: zoom viewport/CSS/fns/persistence/keys + accent HTML/CSS/JS/persistence
+```
+
+Live server (UI tile wall, port 18094):
+```
+uvicorn atomic.ui:app --port 18094 --host 0.0.0.0
+http://<lan-ip>:18094/run/hadamard_wxyz
+```
+
+Docs updates:
+  - `atomic/selftest.py`: added s22_checks() + 10 checks; print → "22 sections".
+  - `ATOMIC-PC-STATE.md`: this section.
+
+## Next iteration — iter 22: Release prep (git init + first commit + docs coherence)

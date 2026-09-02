@@ -1,0 +1,2543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ATOMIC-PC — Tile Wall</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d0d1a;
+    --tile-bg: #111122;
+    --tile-border: #2a2a4a;
+    --accent: #ff8c00;
+    --accent2: #00d4ff;
+    --text: #c8c8e0;
+    --text-dim: #6060a0;
+    --font: 'Courier New', monospace;
+    --bus-bg: #0a0a18;
+    --bus-border: #1a1a3a;
+    --bus-row-hover: #1a1a30;
+  }
+  body.theme-light {
+    --bg: #e8e8f0;
+    --tile-bg: #f0f0fa;
+    --tile-border: #b0b0d0;
+    --accent: #cc6600;
+    --accent2: #0066aa;
+    --text: #202030;
+    --text-dim: #6060a0;
+    --bus-bg: #e0e0ee;
+    --bus-border: #c0c0e0;
+    --bus-row-hover: #d8d8ec;
+  }
+  body.theme-neon {
+    --bg: #000008;
+    --tile-bg: #050515;
+    --tile-border: #004433;
+    --accent: #00ff88;
+    --accent2: #ff00cc;
+    --text: #aaffee;
+    --text-dim: #336655;
+    --bus-bg: #000810;
+    --bus-border: #003322;
+    --bus-row-hover: #001122;
+  }
+  body.accent-override { --accent: var(--accent-override); }
+  html, body {
+    width: 100%; height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #header {
+    flex: 0 0 52px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 16px;
+    background: #0a0a18;
+    border-bottom: 1px solid var(--tile-border);
+  }
+  #header h1 {
+    font-size: 13px;
+    letter-spacing: 0.15em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  #program-name {
+    font-size: 11px;
+    color: var(--text-dim);
+    flex: 1;
+  }
+  #tick-counter {
+    font-size: 13px;
+    color: var(--accent2);
+    min-width: 80px;
+    text-align: right;
+  }
+  #tap-btn {
+    background: #1a1a30;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: var(--font);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    padding: 5px 14px;
+    cursor: pointer;
+    border-radius: 2px;
+    text-transform: uppercase;
+  }
+  #tap-btn:active { background: var(--accent); color: #000; }
+  #speed-wrap {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; color: var(--text-dim);
+  }
+  #speed-slider { width: 80px; accent-color: var(--accent2); }
+  #status {
+    font-size: 11px;
+    color: var(--text-dim);
+    min-width: 120px;
+    text-align: right;
+  }
+  #status.live { color: #0f0; }
+  #status.paused { color: var(--accent); }
+
+  #control-bar {
+    flex: 0 0 auto;
+    background: #0f0f20;
+    border-bottom: 1px solid var(--tile-border);
+    padding: 6px 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    overflow-x: auto;
+    min-height: 40px;
+  }
+  #control-bar .ctrl-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+  }
+  .param-slider {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 10px;
+  }
+  .param-slider label {
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .param-slider input[type=range] {
+    width: 70px; accent-color: var(--accent2);
+  }
+  .param-slider .pval {
+    color: var(--accent2);
+    min-width: 40px;
+    text-align: right;
+  }
+
+  #tile-wall {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(4, 1fr);
+    gap: 3px;
+    padding: 3px;
+    background: #08080f;
+    min-height: 0;
+  }
+  .tile-wall-viewport {
+    flex: 1;
+    overflow: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+    cursor: grab;
+  }
+  .tile-wall-viewport.zooming { cursor: zoom-in; }
+  #tile-wall-viewport, #tile-wall-viewport-2 {
+    flex: 1;
+    overflow: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+    cursor: grab;
+  }
+  #tile-wall-viewport.zooming, #tile-wall-viewport-2.zooming { cursor: zoom-in; }
+  #tile-wall.zoom-transform, #tile-wall-2.zoom-transform {
+    transform-origin: center center;
+    transition: transform 0.1s ease;
+    flex: 0 0 auto;
+  }
+  #zoom-controls {
+    position: fixed;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--bus-bg);
+    border: 1px solid var(--tile-border);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 10px;
+    color: var(--text-dim);
+    z-index: 40;
+  }
+  #zoom-controls button {
+    background: none;
+    border: 1px solid var(--tile-border);
+    color: var(--text-dim);
+    cursor: pointer;
+    font-family: var(--font);
+    font-size: 12px;
+    padding: 1px 6px;
+    border-radius: 2px;
+  }
+  #zoom-controls button:hover { border-color: var(--accent); color: var(--accent); }
+  #zoom-scale { min-width: 36px; text-align: center; color: var(--accent2); }
+  .tile {
+    background: var(--tile-bg);
+    border: 1px solid var(--tile-border);
+    border-radius: 2px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+    min-height: 0;
+  }
+  .tile-cap {
+    flex: 0 0 18px;
+    font-size: 9px;
+    color: var(--text-dim);
+    padding: 2px 5px;
+    background: #0a0a1a;
+    border-bottom: 1px solid var(--tile-border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .tile-cap .tile-id {
+    color: var(--accent2);
+    font-size: 9px;
+  }
+  .tile-cap .tile-type {
+    color: var(--text-dim);
+    font-size: 8px;
+  }
+  .tile canvas {
+    flex: 1;
+    width: 100%;
+    display: block;
+    min-height: 0;
+  }
+  .tile.heatmap canvas {
+    background: #050510;
+  }
+  .tile.series canvas {
+    background: #050510;
+  }
+  .tile.xy canvas, .tile.wxyz3d canvas {
+    background: #050510;
+  }
+  .tile.no-data canvas {
+    background: #050510;
+  }
+  .tile.no-data .tile-cap {
+    color: #333;
+  }
+  #ws-status {
+    font-size: 10px;
+    padding: 0 6px;
+    border-radius: 2px;
+  }
+  #ws-status.connected { color: #0f0; }
+  #ws-status.disconnected { color: #f44; }
+  #ws-status.connecting { color: var(--accent); }
+  .tile.drag-source { border-color: var(--accent) !important; background: #1a1a30; }
+  .tile.drag-target { border-color: var(--accent2) !important; background: #111828; }
+  .tile.multi-tile { border-color: var(--accent2); }
+  .tile-cap .tile-id, .tile-cap .tile-type { cursor: text; }
+  .tile-cap input.tile-rename {
+    background: #1a1a30; color: var(--accent2);
+    border: 1px solid var(--accent); font-family: var(--font);
+    font-size: 9px; padding: 0 3px; width: 80px; outline: none;
+  }
+  #clear-groups-btn {
+    background: #1a1a30;
+    border: 1px solid var(--tile-border);
+    color: var(--text-dim);
+    font-family: var(--font);
+    font-size: 10px;
+    padding: 3px 10px;
+    cursor: pointer;
+    border-radius: 2px;
+  }
+  #clear-groups-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .hdr-btn {
+    background: #1a1a30; border: 1px solid var(--tile-border); color: var(--text-dim);
+    font-family: var(--font); font-size: 10px; padding: 3px 10px; cursor: pointer;
+    border-radius: 2px; text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .hdr-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .hdr-btn.recording { color: #f44; border-color: #f44; animation: rec-blink 1s infinite; }
+  .hdr-btn.replaying { color: #0f0; border-color: #0f0; }
+  @keyframes rec-blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0.4; } }
+  #rtt-badge {
+    font-size: 10px; color: var(--text-dim); padding: 0 6px;
+    border: 1px solid var(--tile-border); border-radius: 2px;
+  }
+  #rtt-badge.good { color: #0f0; border-color: #0f0; }
+  #rtt-badge.fair { color: var(--accent); border-color: var(--accent); }
+  #rtt-badge.poor { color: #f44; border-color: #f44; }
+  #latency-overlay {
+    font-size: 10px; color: var(--text-dim); padding: 0 6px;
+    border: 1px solid var(--tile-border); border-radius: 2px;
+    font-family: var(--font);
+  }
+  #latency-overlay span { color: var(--accent2); }
+  #presets-bar {
+    flex: 0 0 auto; background: #0a0a18; border-bottom: 1px solid var(--tile-border);
+    padding: 4px 12px; display: flex; align-items: center; gap: 8px;
+    font-size: 10px; min-height: 28px;
+  }
+  #presets-bar .ctrl-label {
+    color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  #presets-bar select {
+    background: #1a1a30; color: var(--text); border: 1px solid var(--tile-border);
+    font-family: var(--font); font-size: 10px; padding: 2px 6px; border-radius: 2px;
+  }
+  #presets-bar .preset-name {
+    background: #1a1a30; color: var(--text); border: 1px solid var(--tile-border);
+    font-family: var(--font); font-size: 10px; padding: 2px 6px; width: 110px;
+    border-radius: 2px;
+  }
+  .pane-host.split { display: flex; flex-direction: row; flex: 1; min-height: 0; }
+  .pane-host.split #tile-wall { flex: 1 1 50%; border-right: 2px solid var(--accent2); }
+  .pane-host.split #tile-wall-2 { flex: 1 1 50%; }
+  #tile-wall-2 {
+    display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, 1fr);
+    gap: 3px; padding: 3px; background: #08080f; min-height: 0;
+  }
+  #pane2-header {
+    flex: 0 0 30px; background: #0a0a18; border-bottom: 1px solid var(--tile-border);
+    display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    font-size: 10px; color: var(--text-dim);
+  }
+  #pane2-header select {
+    background: #1a1a30; color: var(--text); border: 1px solid var(--tile-border);
+    font-family: var(--font); font-size: 10px; padding: 2px 6px; border-radius: 2px;
+  }
+  #pane2-host {
+    flex: 0 0 240px; background: #0a0a18; border-top: 1px solid var(--tile-border);
+    padding: 8px 12px; font-size: 10px; color: var(--text-dim);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  #record-status {
+    color: var(--accent2); font-size: 10px;
+  }
+  #prog-switcher, #theme-select {
+    background: #1a1a30; color: var(--text); border: 1px solid var(--tile-border);
+    font-family: var(--font); font-size: 10px; padding: 3px 8px; border-radius: 2px;
+    text-transform: lowercase; letter-spacing: 0.05em;
+  }
+  #prog-switcher:hover, #theme-select:hover { border-color: var(--accent); }
+  #sweep-bar button.recording { color: #f44; border-color: #f44; animation: rec-blink 1s infinite; }
+  #sweep-bar button.replaying { color: #0f0; border-color: #0f0; }
+  .tile.selected { border-color: var(--accent) !important; box-shadow: 0 0 4px var(--accent); }
+  .tile-csv-btn {
+    position: absolute; top: 2px; right: 2px;
+    background: rgba(26,26,48,0.7); color: var(--accent2);
+    border: 1px solid var(--tile-border); font-family: var(--font);
+    font-size: 8px; padding: 1px 4px; cursor: pointer; border-radius: 2px;
+    z-index: 5; display: none;
+  }
+  .tile.series:hover .tile-csv-btn { display: block; }
+  .bus-inspector-row { display: flex; justify-content: space-between; padding: 1px 4px; }
+  .bus-inspector-row:hover { background: var(--bus-row-hover); }
+  .bus-inspector-row .k { color: var(--text-dim); }
+  .bus-inspector-row .v { color: var(--accent2); font-weight: bold; }
+  /* ── iter 6: fullscreen ─────────────────────────────────── */
+  body.fullscreen #header,
+  body.fullscreen #presets-bar,
+  body.fullscreen #sweep-bar,
+  body.fullscreen #control-bar { display: none !important; }
+  body.fullscreen #pane-host { padding: 0; }
+  body.fullscreen #tile-wall { padding: 0; gap: 0; }
+  body.fullscreen .tile { border-radius: 0; }
+  #fullscreen-btn.fullscreen-active { color: var(--accent); border-color: var(--accent); }
+  /* ── iter 6: per-tile color picker ─────────────────────── */
+  .tile-color-btn {
+    position: absolute; top: 2px; left: 2px;
+    background: rgba(26,26,48,0.7); color: var(--accent2);
+    border: 1px solid var(--tile-border); font-family: var(--font);
+    font-size: 8px; padding: 1px 4px; cursor: pointer; border-radius: 2px;
+    z-index: 5; display: none;
+  }
+  .tile:hover .tile-color-btn { display: block; }
+  .tile-color-popup {
+    position: fixed; background: var(--bus-bg); border: 1px solid var(--accent);
+    border-radius: 3px; padding: 6px; z-index: 100; font-family: var(--font);
+    font-size: 10px; color: var(--text); display: flex; flex-direction: column; gap: 4px;
+    box-shadow: 0 0 8px rgba(255,140,0,0.4);
+  }
+  .tile-color-popup input[type=color] { width: 100%; height: 24px; border: none; cursor: pointer; }
+  .tile-color-popup button {
+    background: #1a1a30; color: var(--text-dim); border: 1px solid var(--tile-border);
+    font-family: var(--font); font-size: 9px; padding: 2px 6px; cursor: pointer;
+  }
+  .tile-color-popup button:hover { color: var(--accent); border-color: var(--accent); }
+  .tile-color-swatch {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    margin-right: 3px; vertical-align: middle; border: 1px solid var(--tile-border);
+  }
+  /* ── iter 6: viz override dropdown ────────────────────── */
+  .tile-viz-select {
+    background: rgba(26,26,48,0.7); color: var(--accent2);
+    border: 1px solid var(--tile-border); font-family: var(--font);
+    font-size: 8px; padding: 1px 2px; cursor: pointer; border-radius: 2px;
+    margin-left: auto; display: none;
+  }
+  .tile:hover .tile-viz-select { display: inline-block; }
+  /* ── iter 6: bus inspector search ─────────────────────── */
+  #bus-inspector-search {
+    background: #1a1a30; color: var(--text); border: 1px solid var(--tile-border);
+    font-family: var(--font); font-size: 10px; padding: 2px 4px;
+    width: 100%; margin-bottom: 4px; outline: none;
+  }
+  #bus-inspector-search:focus { border-color: var(--accent2); }
+  #bus-inspector-count { color: var(--text-dim); font-size: 9px; margin-bottom: 3px; }
+  .bus-inspector-row.match { background: rgba(0,212,255,0.15); }
+  .bus-inspector-row.hide { display: none; }
+  /* ── iter 6: keyboard cheat sheet ─────────────────────── */
+  #cheatsheet-overlay {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    background: rgba(10,10,24,0.96); border: 2px solid var(--accent);
+    border-radius: 4px; padding: 20px 28px; font-family: var(--font);
+    color: var(--text); font-size: 12px; z-index: 200;
+    box-shadow: 0 0 32px rgba(255,140,0,0.3); min-width: 360px;
+    display: none;
+  }
+  #cheatsheet-overlay h2 {
+    color: var(--accent); font-size: 13px; letter-spacing: 0.15em;
+    margin-bottom: 12px; text-transform: uppercase;
+  }
+  #cheatsheet-overlay table { border-collapse: collapse; }
+  #cheatsheet-overlay td { padding: 3px 12px 3px 0; vertical-align: top; }
+  #cheatsheet-overlay td.k {
+    color: var(--accent2); font-weight: bold; min-width: 80px;
+    border-right: 1px solid var(--tile-border);
+  }
+  #cheatsheet-overlay td.d { color: var(--text); }
+  #cheatsheet-overlay-close {
+    position: absolute; top: 6px; right: 10px;
+    background: none; border: none; color: var(--text-dim);
+    font-family: var(--font); cursor: pointer; font-size: 14px;
+  }
+  #cheatsheet-overlay-close:hover { color: var(--accent); }
+  /* ── iter 6: screenshot button ────────────────────────── */
+  .tile-shot-btn {
+    position: absolute; top: 2px; left: 38px;
+    background: rgba(26,26,48,0.7); color: var(--accent2);
+    border: 1px solid var(--tile-border); font-family: var(--font);
+    font-size: 8px; padding: 1px 4px; cursor: pointer; border-radius: 2px;
+    z-index: 5; display: none;
+  }
+  .tile:hover .tile-shot-btn { display: block; }
+  /* ── iter 6: favorites ────────────────────────────────── */
+  .star-btn {
+    background: none; border: none; color: var(--text-dim);
+    font-family: var(--font); font-size: 12px; cursor: pointer;
+    padding: 0 4px; line-height: 1;
+  }
+  .star-btn.starred { color: var(--accent); }
+  .star-btn:hover { color: var(--accent2); }
+  #prog-switcher option.starred::before { content: "★ "; color: var(--accent); }
+  #fav-filter-btn { font-size: 10px; }
+  #fav-filter-btn.filtering { color: var(--accent); border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>ATOMIC-PC</h1>
+  <select id="prog-switcher" title="Switch program (no reload)">
+    <option value="">— program —</option>
+  </select>
+  <span id="program-name">—</span>
+  <span id="ws-status" class="disconnected">WS: —</span>
+  <select id="theme-select" title="Color theme">
+    <option value="dark">dark</option>
+    <option value="light">light</option>
+    <option value="neon">neon</option>
+  </select>
+  <input id="accent-picker" type="color" title="Accent color override"
+         style="width:24px;height:24px;padding:0;border:1px solid var(--tile-border);background:none;cursor:pointer;">
+  <button id="accent-clear-btn" class="hdr-btn" title="Clear accent override">clr</button>
+  <span id="rtt-badge" title="WebSocket round-trip time">RTT: —</span>
+  <span id="latency-overlay" title="Per-tick engine + ws-send budget (us)">
+    eng <span id="lat-eng">0</span>us · ws <span id="lat-ws">0</span>us
+  </span>
+  <button id="clear-groups-btn" class="hdr-btn" title="Clear tile groups (g)">Groups</button>
+  <button id="reset-btn" class="hdr-btn" title="Reset engine to t=0 (r)">Reset</button>
+  <button id="record-btn" class="hdr-btn" title="Record live WS to local .qbf">REC</button>
+  <button id="replay-btn" class="hdr-btn" title="Replay last recorded .qbf">PLAY</button>
+  <button id="split-btn" class="hdr-btn" title="Toggle 2-pane split view">SPLIT</button>
+  <button id="fullscreen-btn" class="hdr-btn" title="Fullscreen mode (F)">FS</button>
+  <button id="fav-filter-btn" class="hdr-btn" title="Show favorites only (press *)">★ ALL</button>
+  <div style="flex:1"></div>
+  <div id="speed-wrap">
+    <label>Speed</label>
+    <input id="speed-slider" type="range" min="1" max="60" value="30">
+    <span id="speed-val">30 fps</span>
+  </div>
+  <button id="tap-btn">TAP</button>
+  <span id="tick-counter">t=0</span>
+  <span id="status" class="paused">PAUSED</span>
+</div>
+
+<div id="presets-bar">
+  <span class="ctrl-label">Preset</span>
+  <select id="preset-select"><option value="">— select —</option></select>
+  <input id="preset-name" class="preset-name" placeholder="name" maxlength="32">
+  <button id="preset-save-btn" class="hdr-btn">Save</button>
+  <button id="preset-load-btn" class="hdr-btn">Load</button>
+  <button id="preset-del-btn" class="hdr-btn">Del</button>
+  <span id="preset-info" style="color:var(--text-dim);"></span>
+</div>
+
+<div id="sweep-bar" style="flex:0 0 auto;background:#0a0a18;border-bottom:1px solid var(--tile-border);padding:4px 12px;display:none;align-items:center;gap:8px;font-size:10px;min-height:28px;">
+  <span class="ctrl-label">Sweep</span>
+  <button id="sweep-record-btn" class="hdr-btn" title="Record param sequence">REC</button>
+  <button id="sweep-replay-btn" class="hdr-btn" title="Replay recorded sequence">PLAY</button>
+  <button id="sweep-stop-btn" class="hdr-btn" title="Stop replay">STOP</button>
+  <span id="sweep-status" style="color:var(--text-dim);"></span>
+</div>
+
+<div id="control-bar">
+  <span class="ctrl-label">Params</span>
+</div>
+
+<div class="pane-host" id="pane-host">
+  <div id="zoom-controls">
+    <button id="zoom-out-btn" title="Zoom out (-)">−</button>
+    <span id="zoom-scale">100%</span>
+    <button id="zoom-in-btn" title="Zoom in (+)">+</button>
+    <button id="zoom-fit-btn" title="Fit to window (0)">Fit</button>
+  </div>
+  <div id="tile-wall-viewport">
+    <div id="tile-wall">
+      <!-- 16 tiles injected by JS (pane 1) -->
+    </div>
+  </div>
+  <div id="pane2-host" style="display:none; flex-direction:column;">
+    <div id="pane2-header">
+      <span>Pane 2:</span>
+      <select id="pane2-select"></select>
+      <span id="pane2-status" style="color:var(--text-dim);">—</span>
+    </div>
+    <div id="tile-wall-viewport-2">
+      <div id="tile-wall-2">
+        <!-- 16 tiles injected by JS (pane 2) -->
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="pane2-host-info" style="display:none;"></div>
+<div id="record-status" style="display:none;"></div>
+
+<div id="bus-inspector" style="display:none;position:fixed;top:120px;right:0;width:280px;max-height:60vh;background:var(--bus-bg);border:1px solid var(--bus-border);border-radius:3px 0 0 3px;padding:8px;font-size:10px;color:var(--text);overflow-y:auto;z-index:50;font-family:var(--font);">
+  <input id="bus-inspector-search" placeholder="filter keys (regex)" style="display:none;">
+  <div id="bus-inspector-count" style="display:none;"></div>
+
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+    <span style="color:var(--accent);font-weight:bold;">Bus Inspector</span>
+    <button id="bus-inspector-close" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-family:var(--font);">x</button>
+  </div>
+  <div id="bus-inspector-tile" style="color:var(--accent2);font-size:9px;margin-bottom:4px;"></div>
+  <div id="bus-inspector-body" style="line-height:1.5;"></div>
+</div>
+
+<div id="cheatsheet-overlay">
+  <button id="cheatsheet-overlay-close">x</button>
+  <h2>Keyboard Cheat Sheet</h2>
+  <table>
+    <tr><td class="k">SPACE</td><td class="d">tap (pulse)</td></tr>
+    <tr><td class="k">R</td><td class="d">reset engine to t=0</td></tr>
+    <tr><td class="k">G</td><td class="d">clear all tile groups</td></tr>
+    <tr><td class="k">F</td><td class="d">toggle fullscreen mode</td></tr>
+    <tr><td class="k">?</td><td class="d">show / hide this cheat sheet</td></tr>
+    <tr><td class="k">ESC</td><td class="d">close panels / cheat sheet</td></tr>
+    <tr><td class="k">+ / =</td><td class="d">speed up (5 fps)</td></tr>
+    <tr><td class="k">- / _</td><td class="d">slow down (5 fps)</td></tr>
+    <tr><td class="k">*</td><td class="d">toggle favorites-only filter</td></tr>
+    <tr><td class="k">Ctrl+scroll</td><td class="d">zoom tile wall</td></tr>
+    <tr><td class="k">Ctrl++/-</td><td class="d">zoom in/out</td></tr>
+    <tr><td class="k">Ctrl+0</td><td class="d">fit zoom</td></tr>
+    <tr><td class="k">click tile</td><td class="d">bus inspector</td></tr>
+    <tr><td class="k">dblclick</td><td class="d">rename tile label</td></tr>
+    <tr><td class="k">drag</td><td class="d">link tiles into group</td></tr>
+  </table>
+</div>
+
+<div id="tile-color-popup" class="tile-color-popup" style="display:none;">
+  <div style="color:var(--accent);font-weight:bold;font-size:10px;">Tile color override</div>
+  <input id="tile-color-picker" type="color" value="#ff8c00">
+  <div style="display:flex;gap:4px;">
+    <button id="tile-color-clear" style="flex:1;">Reset</button>
+    <button id="tile-color-cancel" style="flex:1;">Cancel</button>
+  </div>
+</div>
+
+<script>
+// ── Program name from URL ────────────────────────────────────────────────────
+const _path = window.location.pathname;
+const _name = _path.startsWith('/run/') ? _path.slice(5) : 'default';
+const _saved = (() => {
+  try { return JSON.parse(localStorage.getItem('atomic_pc') || '{}'); } catch(e) { return {}; }
+})();
+
+// ── State ───────────────────────────────────────────────────────────────────
+const state = {
+  name: _name,
+  running: false,
+  tick: 0,
+  bus: {},
+  series: {},          // key -> [float]
+  views: [],           // [{id, module, output, key, as, viz, tile_row, tile_col}]
+  heatmap: {},        // {(row,col): 0..1}  time-decayed, last 60 ticks
+  heatmap_signed: false, // iter 4: render sign in heatmap (red-/blue+)
+  heatmap_hist: {},   // key -> [val_t, val_t-1, ...]  per (row,col)
+  heatmap_decay: 0.92, // exponential decay per tick (1.0 = no decay, lower = faster fade)
+  heatmap_window: 60,  // ticks of history kept per cell
+  connected: false,
+  ws: null,
+  ws_attempts: 0,     // backoff counter
+  speed: _saved.speed || 30,
+  loopTimer: null,
+  loopRunning: false,
+  params: {},          // module_id -> {key: {value, min, max, el}}
+  window: 512,         // VIEW_WINDOW from engine
+  groups: {},         // tile-group -> [tile-keys]  (user-defined via drag)
+  tile_names: {},     // "r,c" -> user-renamed label (saved to localStorage)
+  drag: null,          // {start_row, start_col, gid, hover_row, hover_col}
+  pane: { split: false, name2: null, tick2: 0, bus2: {}, series2: {},
+          views2: [], heatmap2: {}, heatmap_hist2: {}, ws2: null,
+          connected2: false, ws_attempts2: 0, groups2: {}, running2: false,
+          tile_names2: {} },
+  recording: false,    // iter 4: capturing live WS frames to .qbf
+  replaying: false,    // iter 4: replaying a recorded .qbf
+  recordBuffer: [],    // iter 4: collected WS frames (cap=2000)
+  recordMax: 2000,
+  pingSent: 0, pingRtt: 0, pingSamples: [], // iter 4: WS RTT
+  engineLatencyUs: 0,  // iter 4: per-tick engine budget (us)
+  wsLatencyUs: 0,      // iter 4: per-tick WS send budget (us)
+  theme: _saved.theme || 'dark',
+  zoom: _saved.zoom || 1.0,         // iter 7: tile-wall zoom level
+  accentColor: _saved.accentColor || null,  // iter 7: optional accent override
+  sweepRec: [],         // iter 5: [{tick, module, key, value}, ...]
+  sweepReplayIdx: 0,
+  sweepReplayTimer: null,
+  sweepReplaying: false,
+  sweepRecording: false,
+  busInspectorTile: null, // {row, col, pane}
+  busFilter: '',          // iter 6: bus inspector regex
+  fullscreen: false,      // iter 6: fullscreen mode
+  tileColors: {},         // iter 6: 'r,c' -> '#rrggbb' color overrides
+  tileVizOverride: {},    // iter 6: 'r,c' -> 'series'|'xy'|'wxyz3d'|null
+  favorites: [],          // iter 6: starred program names
+  favoritesOnly: false,   // iter 6: filter switcher to favorites
+  colorPickerTile: null,  // iter 6: {row, col} for open color picker
+};
+
+// ── Tile-group linking ──────────────────────────────────────────────────────
+// group_id -> [{row, col}, ...]
+// predefined: 2x2 (top-left, top-right, bottom-left, bottom-right), 2x1 rows/cols
+const TILE_GROUPS = {
+  "tl": [[0,0],[0,1],[1,0],[1,1]],
+  "tr": [[0,2],[0,3],[1,2],[1,3]],
+  "bl": [[2,0],[2,1],[3,0],[3,1]],
+  "br": [[2,2],[2,3],[3,2],[3,3]],
+  "h2": [[0,0],[0,1]],
+  "h3": [[0,2],[0,3]],
+  "v2": [[0,0],[1,0]],
+  "v3": [[2,0],[3,0]],
+};
+
+// ── Persistence ────────────────────────────────────────────────────────────
+function saveState() {
+  try {
+    localStorage.setItem('atomic_pc', JSON.stringify({
+      name: state.name,
+      speed: state.speed,
+      groups: state.groups,
+      tile_names: state.tile_names,
+      theme: state.theme,
+      tileColors: state.tileColors,
+      tileVizOverride: state.tileVizOverride,
+      favorites: state.favorites,
+      zoom: state.zoom,
+      accentColor: state.accentColor,
+    }));
+  } catch(e) {}
+}
+
+function loadState() {
+  if (_saved.name && _saved.name !== state.name) {
+    window.location.pathname = '/run/' + _saved.name;
+  }
+  if (_saved.speed) state.speed = _saved.speed;
+  if (_saved.groups) state.groups = _saved.groups;
+  if (_saved.tile_names) state.tile_names = _saved.tile_names;
+  if (_saved.theme) state.theme = _saved.theme;
+  if (_saved.tileColors) state.tileColors = _saved.tileColors;
+  if (_saved.tileVizOverride) state.tileVizOverride = _saved.tileVizOverride;
+  if (_saved.favorites) state.favorites = _saved.favorites;
+  if (_saved.zoom != null) state.zoom = _saved.zoom;
+  if (_saved.accentColor) state.accentColor = _saved.accentColor;
+}
+
+// ── Preset save/load (iter 4) ──────────────────────────────────────────────
+// A preset captures {groups, tile_names, program, params} so a user can
+// save the current layout + slider state and reload it later (or in
+// another browser). Stored under localStorage key 'atomic_pc_presets'
+// as a dict {preset_name: {groups, tile_names, program, params, ts}}.
+const _presets = (() => {
+  try { return JSON.parse(localStorage.getItem('atomic_pc_presets') || '{}'); }
+  catch(e) { return {}; }
+})();
+function _savePresets() {
+  try { localStorage.setItem('atomic_pc_presets', JSON.stringify(_presets)); }
+  catch(e) {}
+}
+function _refreshPresetSelect() {
+  const sel = document.getElementById('preset-select');
+  sel.innerHTML = '<option value="">— select —</option>';
+  const names = Object.keys(_presets).sort();
+  for (const n of names) {
+    const opt = document.createElement('option');
+    opt.value = n; opt.textContent = n;
+    sel.appendChild(opt);
+  }
+}
+function _currentSnapshot() {
+  const params = {};
+  for (const [mid, kv] of Object.entries(state.params)) {
+    params[mid] = {};
+    for (const [k, v] of Object.entries(kv)) {
+      params[mid][k] = v.value;
+    }
+  }
+  return {
+    program: state.name,
+    groups: state.groups,
+    tile_names: state.tile_names,
+    params: params,
+    speed: state.speed,
+    tileColors: state.tileColors,
+    tileVizOverride: state.tileVizOverride,
+    zoom: state.zoom,
+    accentColor: state.accentColor,
+    ts: Date.now(),
+  };
+}
+function _applyPreset(p) {
+  if (!p) return;
+  if (p.program && p.program !== state.name) {
+    // switch program; state.groups/tile_names/params will be applied on boot
+    state._pendingPreset = p;
+    window.location.pathname = '/run/' + p.program;
+    return;
+  }
+  if (p.groups) state.groups = p.groups;
+  if (p.tile_names) state.tile_names = p.tile_names;
+  if (p.zoom != null) { state.zoom = p.zoom; applyZoom(); }
+  if (p.accentColor !== undefined) { state.accentColor = p.accentColor; applyAccentColor(); }
+  if (p.params) {
+    for (const [mid, kv] of Object.entries(p.params)) {
+      if (!state.params[mid]) continue;
+      for (const [k, v] of Object.entries(kv)) {
+        if (state.params[mid][k]) {
+          state.params[mid][k].value = v;
+          if (state.params[mid][k].el) {
+            state.params[mid][k].el.value = v;
+            const wrap = state.params[mid][k].el.parentElement;
+            const pval = wrap ? wrap.querySelector('.pval') : null;
+            if (pval) pval.textContent = v.toFixed(2);
+          }
+          if (state.ws && state.connected) {
+            state.ws.send(JSON.stringify({
+              type: 'param', module: mid, params: { [k]: v },
+            }));
+          }
+        }
+      }
+    }
+  }
+  saveState();
+  updateGroupBadges();
+  _refreshTileNames();
+  redrawWall();
+  const info = document.getElementById('preset-info');
+  if (info) info.textContent = 'loaded ' + Object.keys(_presets).length +
+    ' preset(s) · current applied';
+}
+function savePreset(name) {
+  name = (name || '').trim();
+  if (!name) {
+    const info = document.getElementById('preset-info');
+    if (info) info.textContent = 'name required';
+    return;
+  }
+  _presets[name] = _currentSnapshot();
+  _savePresets();
+  _refreshPresetSelect();
+  const info = document.getElementById('preset-info');
+  if (info) info.textContent = 'saved "' + name + '"';
+}
+function loadPreset(name) {
+  const p = _presets[name];
+  if (!p) {
+    const info = document.getElementById('preset-info');
+    if (info) info.textContent = 'no preset "' + name + '"';
+    return;
+  }
+  _applyPreset(p);
+}
+function deletePreset(name) {
+  if (!_presets[name]) return;
+  delete _presets[name];
+  _savePresets();
+  _refreshPresetSelect();
+  const info = document.getElementById('preset-info');
+  if (info) info.textContent = 'deleted "' + name + '"';
+}
+
+// ── Theme (iter 5) ────────────────────────────────────────────────────────────
+function applyTheme(name) {
+  state.theme = name;
+  document.body.className = 'theme-' + name;
+  const sel = document.getElementById('theme-select');
+  if (sel) sel.value = name;
+  applyAccentColor();
+  saveState();
+}
+
+// ── Accent color override (iter 7) ───────────────────────────────────────────
+// Optional user-picked accent that overlays the theme's --accent CSS var.
+// Lives on <body> so it wins against the theme selectors via specificity.
+function applyAccentColor() {
+  document.body.style.setProperty('--accent-override',
+    state.accentColor || 'transparent');
+  if (state.accentColor) {
+    document.body.classList.add('accent-override');
+  } else {
+    document.body.classList.remove('accent-override');
+  }
+}
+
+// ── Zoom (iter 7) ─────────────────────────────────────────────────────────────
+// CSS scale on the inner tile-wall, with the viewport providing the scroll
+// surface when zoom > 1.  Triggered by Ctrl/Cmd+wheel (no hijack of normal
+// scroll), the +/-/Fit buttons, and keyboard +/-/0.
+function applyZoom() {
+  const z = Math.max(0.5, Math.min(4.0, state.zoom || 1.0));
+  state.zoom = z;
+  for (const id of ['tile-wall', 'tile-wall-2']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.style.transform = 'scale(' + z + ')';
+    el.style.width = (100 * z) + '%';
+    el.style.height = (100 * z) + '%';
+    el.classList.add('zoom-transform');
+  }
+  const lbl = document.getElementById('zoom-scale');
+  if (lbl) lbl.textContent = Math.round(z * 100) + '%';
+  saveState();
+}
+function zoomBy(delta) {
+  state.zoom = (state.zoom || 1.0) + delta;
+  applyZoom();
+}
+function zoomFit() {
+  state.zoom = 1.0;
+  applyZoom();
+}
+function setupZoom() {
+  applyZoom();
+  for (const id of ['tile-wall-viewport', 'tile-wall-viewport-2']) {
+    const v = document.getElementById(id);
+    if (!v) continue;
+    v.addEventListener('wheel', (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 0.1 : -0.1;
+      zoomBy(factor);
+      v.classList.add('zooming');
+      clearTimeout(v._zoomTimer);
+      v._zoomTimer = setTimeout(() => v.classList.remove('zooming'), 200);
+    }, { passive: false });
+  }
+  document.getElementById('zoom-in-btn').addEventListener('click', () => zoomBy(0.1));
+  document.getElementById('zoom-out-btn').addEventListener('click', () => zoomBy(-0.1));
+  document.getElementById('zoom-fit-btn').addEventListener('click', zoomFit);
+}
+
+// ── Program switcher (iter 5) ────────────────────────────────────────────────
+async function _refreshProgramSwitcher() {
+  const sel = document.getElementById('prog-switcher');
+  sel.innerHTML = '<option value="">— program —</option>';
+  try {
+    const r = await fetch('/api/programs');
+    const d = await r.json();
+    for (const p of d.programs) {
+      const opt = document.createElement('option');
+      opt.value = p; opt.textContent = p;
+      if (p === state.name) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    // Also populate pane2 select (existing behaviour, iter 4)
+    const sel2 = document.getElementById('pane2-select');
+    if (sel2) {
+      sel2.innerHTML = '';
+      for (const p of d.programs) {
+        const opt2 = document.createElement('option');
+        opt2.value = p; opt2.textContent = p;
+        sel2.appendChild(opt2);
+      }
+    }
+  } catch(e) {}
+}
+
+function _switchProgram(name) {
+  if (!name || name === state.name) return;
+  state.name = name;
+  document.getElementById('program-name').textContent = name;
+  // Reset state
+  state.tick = 0; state.bus = {}; state.series = {};
+  state.heatmap = {}; state.heatmap_hist = {};
+  state.groups = {}; state.tile_names = {};
+  state.sweepRec = []; state.sweepReplaying = false;
+  // Close old WS, reconnect
+  if (state.ws) { state.ws.close(); state.ws = null; }
+  state.connected = false;
+  setWSStatus('connecting', 'WS: INIT');
+  connectWS(name, 'tile');
+  // Reload control schema
+  loadControl();
+  // Reload views
+  fetch('/api/views/' + name).then(r => r.json()).then(data => {
+    state.views = data.views || [];
+    redrawWall();
+  }).catch(() => {});
+  saveState();
+  updateGroupBadges('tile');
+  redrawWall('tile');
+  document.getElementById('tick-counter').textContent = 't=0';
+}
+
+// ── Bus inspector (iter 5) ───────────────────────────────────────────────────
+function showBusInspector(row, col, pane) {
+  pane = pane || 'tile';
+  state.busInspectorTile = { row, col, pane };
+  const bus = pane === 'tile' ? state.bus : state.pane.bus2;
+  const el = document.getElementById('bus-inspector');
+  const tileEl = document.getElementById('pane' + (pane === 'tile2' ? '2-' : '-') + row + '-' + col);
+  const tileLabel = tileEl ? (tileEl.querySelector('.tile-id') || {}).textContent || '' : '';
+  document.getElementById('bus-inspector-tile').textContent =
+    'tile ' + row + ',' + col + (tileLabel ? ' (' + tileLabel + ')' : '');
+  const view = (pane === 'tile' ? state.views : state.pane.views2)
+    .find(v => v.tile_row === row && v.tile_col === col);
+  const keys = Object.keys(bus).sort();
+  const body = document.getElementById('bus-inspector-body');
+  const searchEl = document.getElementById('bus-inspector-search');
+  const countEl = document.getElementById('bus-inspector-count');
+  searchEl.style.display = 'block';
+  countEl.style.display = 'block';
+
+  function renderBus(filter) {
+    let regex = null;
+    if (filter) {
+      try { regex = new RegExp(filter, 'i'); } catch(e) { regex = null; }
+    }
+    const filtered = regex
+      ? keys.filter(k => regex.test(k))
+      : keys;
+    if (!filtered.length) { body.innerHTML = '<span style="color:var(--text-dim);">no matches</span>'; }
+    else {
+      body.innerHTML = filtered.map(k => {
+        const v = bus[k];
+        const disp = v == null ? '—' : (typeof v === 'number' ? v.toFixed(4) : v);
+        const matched = regex && regex.test(k) ? ' match' : '';
+        return '<div class="bus-inspector-row' + matched + '"><span class="k">' + k + '</span><span class="v">' + disp + '</span></div>';
+      }).join('');
+    }
+    countEl.textContent = filtered.length + '/' + keys.length + ' key(s)';
+    state.busFilter = filter || '';
+  }
+  renderBus(state.busFilter);
+  if (searchEl) {
+    searchEl.value = state.busFilter || '';
+    searchEl.oninput = () => renderBus(searchEl.value);
+  }
+  el.style.display = 'block';
+}
+
+function hideBusInspector() {
+  state.busInspectorTile = null;
+  document.getElementById('bus-inspector').style.display = 'none';
+  document.querySelectorAll('.tile.selected').forEach(t => t.classList.remove('selected'));
+}
+
+document.getElementById('bus-inspector-close').addEventListener('click', hideBusInspector);
+
+// ── Param sweep / automation (iter 5) ────────────────────────────────────────
+// Record: while sweepRecording=true, every param change via WS is logged.
+// Replay: advance through sweepRec at current speed, dispatch param WS msgs.
+function _startSweepRecording() {
+  state.sweepRec = [];
+  state.sweepRecording = true;
+  state.sweepReplaying = false;
+  document.getElementById('sweep-bar').style.display = 'flex';
+  document.getElementById('sweep-record-btn').classList.add('recording');
+  document.getElementById('sweep-replay-btn').classList.remove('replaying');
+  document.getElementById('sweep-status').textContent = 'recording...';
+}
+
+function _stopSweepRecording() {
+  state.sweepRecording = false;
+  document.getElementById('sweep-record-btn').classList.remove('recording');
+  document.getElementById('sweep-status').textContent =
+    state.sweepRec.length + ' step(s) recorded';
+}
+
+function _startSweepReplay() {
+  if (!state.sweepRec.length) return;
+  state.sweepReplaying = true;
+  state.sweepRecording = false;
+  state.sweepReplayIdx = 0;
+  document.getElementById('sweep-bar').style.display = 'flex';
+  document.getElementById('sweep-replay-btn').classList.add('replaying');
+  document.getElementById('sweep-record-btn').classList.remove('recording');
+  document.getElementById('sweep-status').textContent = 'replaying 0/' + state.sweepRec.length;
+  _sweepReplayTick();
+}
+
+function _sweepReplayTick() {
+  if (!state.sweepReplaying || !state.sweepRec.length) {
+    state.sweepReplaying = false;
+    document.getElementById('sweep-replay-btn').classList.remove('replaying');
+    document.getElementById('sweep-status').textContent = 'done';
+    return;
+  }
+  const rec = state.sweepRec[state.sweepReplayIdx];
+  const now = state.tick;
+  if (rec.tick === now && state.ws && state.connected) {
+    state.ws.send(JSON.stringify({
+      type: 'param', module: rec.module, params: { [rec.key]: rec.value },
+    }));
+  }
+  document.getElementById('sweep-status').textContent =
+    'replaying ' + (state.sweepReplayIdx + 1) + '/' + state.sweepRec.length;
+  state.sweepReplayIdx++;
+  state.sweepReplayTimer = setTimeout(_sweepReplayTick, 1000 / state.speed);
+}
+
+function _stopSweepReplay() {
+  state.sweepReplaying = false;
+  if (state.sweepReplayTimer) { clearTimeout(state.sweepReplayTimer); state.sweepReplayTimer = null; }
+  document.getElementById('sweep-replay-btn').classList.remove('replaying');
+  document.getElementById('sweep-status').textContent = 'stopped';
+}
+
+// ── iter 6: fullscreen mode ──────────────────────────────────────────────────
+function toggleFullscreen() {
+  state.fullscreen = !state.fullscreen;
+  document.body.classList.toggle('fullscreen', state.fullscreen);
+  const btn = document.getElementById('fullscreen-btn');
+  if (btn) btn.classList.toggle('fullscreen-active', state.fullscreen);
+  if (btn) btn.textContent = state.fullscreen ? 'FS*' : 'FS';
+}
+
+// ── iter 6: per-tile color picker ────────────────────────────────────────────
+function openColorPicker(row, col) {
+  state.colorPickerTile = { row, col };
+  const popup = document.getElementById('tile-color-popup');
+  const picker = document.getElementById('tile-color-picker');
+  const key = row + ',' + col;
+  picker.value = state.tileColors[key] || '#ff8c00';
+  const t = document.getElementById('tile-' + row + '-' + col);
+  if (t) {
+    const rect = t.getBoundingClientRect();
+    popup.style.left = (rect.left + 4) + 'px';
+    popup.style.top = (rect.top + 18) + 'px';
+  }
+  popup.style.display = 'flex';
+}
+
+function closeColorPicker() {
+  document.getElementById('tile-color-popup').style.display = 'none';
+  state.colorPickerTile = null;
+}
+
+function applyTileColor(row, col, hex) {
+  const key = row + ',' + col;
+  if (hex) state.tileColors[key] = hex;
+  else delete state.tileColors[key];
+  saveState();
+  redrawWall();
+}
+
+// ── iter 6: tile screenshot (PNG) ────────────────────────────────────────────
+function exportTilePNG(row, col, pane) {
+  pane = pane || 'tile';
+  const t = document.getElementById(pane + '-' + row + '-' + col);
+  if (!t) return;
+  const canvas = t.querySelector('canvas');
+  if (!canvas) return;
+  const name = state.tile_names[row + ',' + col] || ('r' + row + 'c' + col);
+  canvas.toBlob(blob => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'tile_' + (pane === 'tile2' ? '2_' : '') + name.replace(/[^a-zA-Z0-9_-]/g, '_') + '.png';
+    a.click();
+    URL.revokeObjectURL(url);
+  }, 'image/png');
+}
+
+// ── iter 6: viz override (force tile to series/xy/wxyz3d) ─────────────────────
+function setVizOverride(row, col, viz) {
+  const key = row + ',' + col;
+  if (viz) state.tileVizOverride[key] = viz;
+  else delete state.tileVizOverride[key];
+  saveState();
+  redrawWall();
+}
+
+function _effectiveViz(view, row, col) {
+  const key = row + ',' + col;
+  return state.tileVizOverride[key] || (view ? view.viz : 'heatmap');
+}
+
+// ── iter 6: program favorites ────────────────────────────────────────────────
+function toggleFavorite(name) {
+  const i = state.favorites.indexOf(name);
+  if (i >= 0) state.favorites.splice(i, 1);
+  else state.favorites.push(name);
+  saveState();
+  refreshProgramSwitcher();
+}
+
+function refreshProgramSwitcher() {
+  const sel = document.getElementById('prog-switcher');
+  const filtBtn = document.getElementById('fav-filter-btn');
+  if (filtBtn) filtBtn.textContent = state.favoritesOnly ? '★ FAV' : '★ ALL';
+  _refreshProgramSwitcher();
+  // add star button + toggle star on existing options
+  const old = document.getElementById('star-btn-active');
+  if (old) old.remove();
+  const star = document.createElement('button');
+  star.id = 'star-btn-active';
+  star.className = 'star-btn' + (state.favorites.includes(state.name) ? ' starred' : '');
+  star.title = 'Star ' + state.name + ' (favorite)';
+  star.textContent = state.favorites.includes(state.name) ? '★' : '☆';
+  star.style.marginLeft = '4px';
+  star.addEventListener('click', () => toggleFavorite(state.name));
+  document.getElementById('program-name').after(star);
+  // mark starred options
+  sel.querySelectorAll('option').forEach(o => {
+    if (state.favorites.includes(o.value)) o.classList.add('starred');
+    else o.classList.remove('starred');
+  });
+}
+
+function toggleFavoritesOnly() {
+  state.favoritesOnly = !state.favoritesOnly;
+  const filtBtn = document.getElementById('fav-filter-btn');
+  if (filtBtn) filtBtn.classList.toggle('filtering', state.favoritesOnly);
+  refreshProgramSwitcher();
+}
+
+// ── iter 6: keyboard cheat sheet ─────────────────────────────────────────────
+function toggleCheatsheet() {
+  const el = document.getElementById('cheatsheet-overlay');
+  el.style.display = el.style.display === 'block' ? 'none' : 'block';
+}
+
+// ── CSV export for series tiles (iter 5) ──────────────────────────────────────
+function exportSeriesCSV(key, pane) {
+  pane = pane || 'tile';
+  const series = pane === 'tile' ? state.series : state.pane.series2;
+  const data = series[key];
+  if (!data || !data.length) return;
+  const header = 'tick,value\n';
+  const rows = data.map((v, i) => i + ',' + v).join('\n');
+  const blob = new Blob([header + rows], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = key.replace(/\./g, '_') + '.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Tile wall construction ───────────────────────────────────────────────────
+const WALL = document.getElementById('tile-wall');
+const WALL2 = document.getElementById('tile-wall-2');
+const TILE_COLS = 4;
+const TILE_ROWS = 4;
+
+function buildWall(wallEl, paneId) {
+  wallEl.innerHTML = '';
+  for (let i = 0; i < TILE_COLS * TILE_ROWS; i++) {
+    const row = Math.floor(i / TILE_COLS);
+    const col = i % TILE_COLS;
+    const tile = document.createElement('div');
+    tile.className = 'tile no-data';
+    tile.id = paneId + '-' + row + '-' + col;
+    tile.dataset.row = row;
+    tile.dataset.col = col;
+    tile.innerHTML = `
+      <div class="tile-cap">
+        <span class="tile-id">r${row}c${col}</span>
+        <span class="tile-type"></span>
+        <span class="tile-group-badge" style="display:none;margin-left:auto;font-size:8px;color:var(--accent);"></span>
+        <select class="tile-viz-select" data-row="${row}" data-col="${col}" data-pane="${paneId}">
+          <option value="">auto</option>
+          <option value="series">series</option>
+          <option value="xy">xy</option>
+          <option value="wxyz3d">wxyz3d</option>
+        </select>
+        <button class="tile-color-btn" data-row="${row}" data-col="${col}" data-pane="${paneId}">CLR</button>
+        <button class="tile-shot-btn" data-row="${row}" data-col="${col}" data-pane="${paneId}">PNG</button>
+        <button class="tile-csv-btn" data-row="${row}" data-col="${col}" data-pane="${paneId}">CSV</button>
+      </div>
+      <canvas></canvas>`;
+    wallEl.appendChild(tile);
+
+    // CSV export button
+    const csvBtn = tile.querySelector('.tile-csv-btn');
+    csvBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const r = parseInt(csvBtn.dataset.row), c = parseInt(csvBtn.dataset.col);
+      const paneId2 = csvBtn.dataset.pane;
+      const views = paneId2 === 'tile' ? state.views : state.pane.views2;
+      const view = views.find(v => v.tile_row === r && v.tile_col === c);
+      if (view && view.viz === 'series') {
+        exportSeriesCSV(view.key, paneId2);
+      }
+    });
+
+    // iter 6: color picker button
+    const clrBtn = tile.querySelector('.tile-color-btn');
+    clrBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const r = parseInt(clrBtn.dataset.row), c = parseInt(clrBtn.dataset.col);
+      openColorPicker(r, c);
+    });
+
+    // iter 6: screenshot button
+    const shotBtn = tile.querySelector('.tile-shot-btn');
+    shotBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const r = parseInt(shotBtn.dataset.row), c = parseInt(shotBtn.dataset.col);
+      const paneId2 = shotBtn.dataset.pane;
+      exportTilePNG(r, c, paneId2);
+    });
+
+    // iter 6: viz override dropdown
+    const vizSel = tile.querySelector('.tile-viz-select');
+    vizSel.addEventListener('click', (e) => e.stopPropagation());
+    vizSel.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const r = parseInt(vizSel.dataset.row), c = parseInt(vizSel.dataset.col);
+      setVizOverride(r, c, e.target.value);
+    });
+
+    // tile-cap double-click -> inline rename
+    const cap = tile.querySelector('.tile-cap');
+    cap.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      const idEl = cap.querySelector('.tile-id');
+      if (!idEl || idEl.tagName === 'INPUT') return;
+      const cur = idEl.textContent;
+      const inp = document.createElement('input');
+      inp.className = 'tile-rename';
+      inp.value = cur;
+      inp.maxLength = 16;
+      idEl.replaceWith(inp);
+      inp.focus();
+      inp.select();
+      const commit = () => {
+        const v = inp.value.trim() || cur;
+        const newId = document.createElement('span');
+        newId.className = 'tile-id';
+        newId.textContent = v;
+        inp.replaceWith(newId);
+        if (paneId === 'tile') {
+          const key = row + ',' + col;
+          if (v && v !== cur) state.tile_names[key] = v;
+          else delete state.tile_names[key];
+          saveState();
+        }
+      };
+      inp.addEventListener('blur', commit);
+      inp.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+        if (ev.key === 'Escape') { inp.value = cur; commit(); }
+      });
+    });
+
+    tile.addEventListener('mousedown', (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const r = parseInt(tile.dataset.row), c = parseInt(tile.dataset.col);
+      state.drag = { start_r: r, start_c: c, tiles: new Set([r + ',' + c]), pane: paneId };
+      tile.classList.add('drag-source');
+    });
+
+    tile.addEventListener('mouseover', (e) => {
+      if (!state.drag || state.drag.pane !== paneId) return;
+      const r = parseInt(tile.dataset.row), c = parseInt(tile.dataset.col);
+      const key = r + ',' + c;
+      if (!state.drag.tiles.has(key)) {
+        state.drag.tiles.add(key);
+        tile.classList.add('drag-target');
+      }
+    });
+
+    tile.addEventListener('mouseleave', (e) => {
+      if (!state.drag || state.drag.pane !== paneId) return;
+      tile.classList.remove('drag-target');
+    });
+
+    tile.addEventListener('mouseup', (e) => {
+      if (!state.drag || state.drag.pane !== paneId) return;
+      const tiles = Array.from(state.drag.tiles).map(k => k.split(',').map(Number));
+      if (tiles.length >= 2) {
+        const gid = 'u' + Date.now();
+        if (paneId === 'tile') state.groups[gid] = tiles;
+        else state.pane.groups2[gid] = tiles;
+        saveState();
+        updateGroupBadges(paneId);
+      }
+      document.querySelectorAll('.tile').forEach(t => {
+        t.classList.remove('drag-source', 'drag-target');
+      });
+      state.drag = null;
+    });
+
+    // click tile -> bus inspector (iter 5)
+    tile.addEventListener('click', (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+      const r = parseInt(tile.dataset.row), c = parseInt(tile.dataset.col);
+      const prev = state.busInspectorTile;
+      const same = prev && prev.row === r && prev.col === c && prev.pane === paneId;
+      document.querySelectorAll('.tile.selected').forEach(t => t.classList.remove('selected'));
+      if (same) {
+        hideBusInspector();
+      } else {
+        tile.classList.add('selected');
+        showBusInspector(r, c, paneId);
+      }
+    });
+  }
+
+  document.addEventListener('mouseup', () => {
+    if (state.drag) {
+      document.querySelectorAll('.tile').forEach(t => {
+        t.classList.remove('drag-source', 'drag-target');
+      });
+      state.drag = null;
+    }
+  });
+}
+buildWall(WALL, 'tile');
+buildWall(WALL2, 'tile2');
+
+function _refreshTileNames() {
+  for (let r = 0; r < TILE_ROWS; r++) {
+    for (let c = 0; c < TILE_COLS; c++) {
+      const key = r + ',' + c;
+      const name = state.tile_names[key];
+      const el = document.getElementById('tile-' + r + '-' + c);
+      if (!el) continue;
+      const idEl = el.querySelector('.tile-id');
+      if (idEl) idEl.textContent = name || ('r' + r + 'c' + c);
+    }
+  }
+}
+
+// ── Group badge update ──────────────────────────────────────────────────────
+function updateGroupBadges(pane) {
+  const groups = pane === 'tile2' ? state.pane.groups2 : state.groups;
+  const prefix = pane === 'tile2' ? 'tile2' : 'tile';
+  const badges = document.querySelectorAll('#' + prefix + '-wall .tile-group-badge');
+  badges.forEach(b => { b.textContent = ''; b.style.display = 'none'; });
+  for (const [gid, tiles] of Object.entries(groups)) {
+    for (const [r, c] of tiles) {
+      const t = document.getElementById(prefix + '-' + r + '-' + c);
+      if (!t) continue;
+      const badge = t.querySelector('.tile-group-badge');
+      if (badge) { badge.textContent = gid; badge.style.display = 'inline'; }
+      t.dataset.group = gid;
+    }
+  }
+}
+
+// ── Tile lookup ─────────────────────────────────────────────────────────────
+function tileCanvas(row, col, pane) {
+  pane = pane || 'tile';
+  const t = document.getElementById(pane + '-' + row + '-' + col);
+  return t ? t.querySelector('canvas') : null;
+}
+
+// ── DPR-aware canvas resize ─────────────────────────────────────────────────
+function resizeTile(row, col, pane) {
+  pane = pane || 'tile';
+  const t = document.getElementById(pane + '-' + row + '-' + col);
+  if (!t) return;
+  const canvas = t.querySelector('canvas');
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = t.clientWidth;
+  const h = t.clientHeight;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+}
+
+function resizeTileGroup(row, col, pane) {
+  pane = pane || 'tile';
+  resizeTile(row, col, pane);
+  const groups = pane === 'tile' ? state.groups : state.pane.groups2;
+  for (const [gid, tiles] of Object.entries(groups)) {
+    for (const [r, c] of tiles) {
+      if (r === row && c === col) {
+        for (const [tr, tc] of tiles) resizeTile(tr, tc, pane);
+        return;
+      }
+    }
+  }
+}
+
+const _ro = new ResizeObserver((entries) => {
+  for (const entry of entries) {
+    const tile = entry.target;
+    const id = tile.id; // 'tile-r-c' or 'tile2-r-c'
+    const parts = id.split('-');
+    const pane = parts[0] === 'tile2' ? 'tile2' : 'tile';
+    const r = parseInt(parts[1]), c = parseInt(parts[2]);
+    resizeTile(r, c, pane);
+  }
+});
+document.querySelectorAll('.tile').forEach(t => _ro.observe(t));
+
+// ── Drawing helpers ─────────────────────────────────────────────────────────
+function _px(canvas, x, y, w, h, color) {
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+function _line(canvas, x1, y1, x2, y2, color, width = 1) {
+  const ctx = canvas.getContext('2d');
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.stroke();
+}
+
+function _poly(canvas, pts, color, width = 1) {
+  if (!pts || pts.length < 2) return;
+  const ctx = canvas.getContext('2d');
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.stroke();
+}
+
+function _dot(canvas, x, y, r, color) {
+  const ctx = canvas.getContext('2d');
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+function _hexToRgba(hex, alpha) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return `rgba(255,140,0,${alpha})`;
+  return `rgba(${parseInt(m[1],16)},${parseInt(m[2],16)},${parseInt(m[3],16)},${alpha})`;
+}
+
+// ── Heatmap draw (legacy multi-tile, now unused but kept for compat) ──────────
+const HM_COLORS = ['#0d0020', '#1a0040', '#300060', '#5500aa',
+                   '#8800ff', '#aa44ff', '#dd88ff', '#ffaaff'];
+
+function drawHeatmap(canvas, heatmap) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.width, H = canvas.height;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, W, H);
+  if (!heatmap || Object.keys(heatmap).length === 0) return;
+  const cols = TILE_COLS, rows = TILE_ROWS;
+  const tw = canvas.width / cols;
+  const th = canvas.height / rows;
+  const n = HM_COLORS.length;
+  for (const [key, val] of Object.entries(heatmap)) {
+    const [r, c] = key.split(',').map(Number);
+    if (isNaN(r) || isNaN(c)) continue;
+    const idx = Math.min(n - 1, Math.max(0, Math.floor(val * n)));
+    ctx.fillStyle = HM_COLORS[idx];
+    const x = c * tw, y = r * th;
+    ctx.fillRect(x * dpr, y * dpr, tw * dpr, th * dpr);
+  }
+  ctx.strokeStyle = '#1a1a3a';
+  ctx.lineWidth = 1;
+  for (let r = 0; r <= rows; r++) {
+    ctx.beginPath();
+    ctx.moveTo(0, r * th * dpr);
+    ctx.lineTo(canvas.width, r * th * dpr);
+    ctx.stroke();
+  }
+  for (let c = 0; c <= cols; c++) {
+    ctx.beginPath();
+    ctx.moveTo(c * tw * dpr, 0);
+    ctx.lineTo(c * tw * dpr, canvas.height);
+    ctx.stroke();
+  }
+}
+
+// ── Series line chart draw ───────────────────────────────────────────────────
+function drawSeries(canvas, series, key, colorOverride) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.width, H = canvas.height;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, W, H);
+  const data = series[key];
+  if (!data || data.length < 2) return;
+  const n = data.length;
+  const maxPts = Math.min(n, state.window || 512);
+  const start = Math.max(0, n - maxPts);
+  const slice = data.slice(start);
+  const lo = Math.min(...slice);
+  const hi = Math.max(...slice);
+  const span = hi - lo || 1;
+  const pts = slice.map((v, i) => [
+    (i / (slice.length - 1)) * W,
+    H - ((v - lo) / span) * H,
+  ]);
+  _poly(canvas, pts, colorOverride || '#ff8c00', 1.5 * dpr);
+  _line(canvas, 0, H, W, H, '#1a1a3a', 1);
+  const last = slice[slice.length - 1];
+  const ly = H - ((last - lo) / span) * H;
+  _dot(canvas, W, ly, 2 * dpr, '#00d4ff');
+}
+
+// ── XY scatter draw ──────────────────────────────────────────────────────────
+function drawXY(canvas, series, xKey, yKey, colorOverride) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.width, H = canvas.height;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, W, H);
+  const xv = series[xKey];
+  const yv = series[yKey];
+  if (!xv || !yv || xv.length < 1 || yv.length < 1) return;
+  const n = Math.min(xv.length, yv.length);
+  const all = xv.slice(0, n).concat(yv.slice(0, n));
+  const lo = Math.min(...all);
+  const hi = Math.max(...all);
+  const span = hi - lo || 1;
+  const hexColor = colorOverride || '#ff8c00';
+  const rgbaColor = _hexToRgba(hexColor, 1);
+  for (let i = 0; i < n; i++) {
+    const x = ((xv[i] - lo) / span) * W;
+    const y = H - ((yv[i] - lo) / span) * H;
+    const alpha = Math.max(0.2, 1.0 - i / n);
+    _dot(canvas, x, y, 2 * dpr, _hexToRgba(hexColor, alpha));
+  }
+  const lx = ((xv[n-1] - lo) / span) * W;
+  const ly = H - ((yv[n-1] - lo) / span) * H;
+  _dot(canvas, lx, ly, 4 * dpr, '#00d4ff');
+  _line(canvas, 0, ly, lx, ly, '#0a3a5a', 0.5 * dpr);
+  _line(canvas, lx, ly, lx, H, '#0a3a5a', 0.5 * dpr);
+}
+
+// ── WXYZ 3D scatter (2.5D isometric projection) ───────────────────────────────
+function drawWXYZ3D(canvas, series, wKey, xKey, yKey, zKey, colorOverride) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.width, H = canvas.height;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, W, H);
+  const keys = [wKey, xKey, yKey, zKey].filter(k => series[k] && series[k].length > 0);
+  if (keys.length < 2) return;
+  const n = Math.min(...keys.map(k => series[k].length));
+  const all = [];
+  for (const k of keys) all.push(...series[k].slice(0, n));
+  const lo = Math.min(...all);
+  const hi = Math.max(...all);
+  const span = hi - lo || 1;
+  const scaleX = W * 0.4, scaleY = H * 0.4;
+  const ox = W * 0.5, oy = H * 0.5;
+  const bx = [scaleX, scaleY * 0.3];
+  const by = [-scaleX, scaleY * 0.3];
+  const bz = [0, -scaleY * 0.9];
+  const project = (wx, yx, zx) => [
+    ox + wx * bx[0] + yx * by[0] + zx * bz[0],
+    oy + wx * bx[1] + yx * by[1] + zx * bz[1],
+  ];
+  const cols = colorOverride
+    ? [colorOverride, colorOverride, colorOverride, colorOverride]
+    : ['#ff4444', '#44ff44', '#4488ff', '#ffdd00'];
+  for (let ki = 0; ki < keys.length; ki++) {
+    const k = keys[ki];
+    const col = cols[ki % cols.length];
+    for (let i = 0; i < n; i++) {
+      const v = (series[k][i] - lo) / span;
+      const p = project(ki === 0 ? v : 0, ki === 1 ? v : 0, ki === 2 ? v : 0);
+      const alpha = Math.max(0.3, 1 - i / n);
+      _dot(canvas, p[0], p[1], 2 * dpr, _hexToRgba(col, alpha));
+    }
+  }
+  const axW = project(1, 0, 0);
+  const axY = project(0, 1, 0);
+  const axZ = project(0, 0, 1);
+  _line(canvas, ox, oy, axW[0], axW[1], '#ff444480', 1);
+  _line(canvas, ox, oy, axY[0], axY[1], '#44ff4480', 1);
+  _line(canvas, ox, oy, axZ[0], axZ[1], '#4488ff80', 1);
+}
+
+// ── Tile rendering dispatch ────────────────────────────────────────────────────
+function _isGroupLead(row, col, pane) {
+  pane = pane || 'tile';
+  const groups = pane === 'tile2' ? state.pane.groups2 : state.groups;
+  for (const [gid, tiles] of Object.entries(groups)) {
+    for (const [r, c] of tiles) {
+      if (r === row && c === col) {
+        let isLead = true;
+        for (const [r2, c2] of tiles) {
+          if (r2 < row || (r2 === row && c2 < col)) {
+            isLead = false;
+            break;
+          }
+        }
+        return isLead ? { lead: true, gid, tiles } : { lead: false, gid, tiles };
+      }
+    }
+  }
+  return null;
+}
+
+function renderTile(tileRow, tileCol, views, series, heatmap, pane) {
+  pane = pane || 'tile';
+  const grp = _isGroupLead(tileRow, tileCol, pane);
+  if (grp && !grp.lead) {
+    const canvas = tileCanvas(tileRow, tileCol, pane);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#050510';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    return;
+  }
+  if (grp && grp.lead) {
+    renderGroup(grp.gid, grp.tiles, views, series, heatmap, pane);
+    return;
+  }
+  const view = views.find(v => v.tile_row === tileRow && v.tile_col === tileCol);
+  const canvas = tileCanvas(tileRow, tileCol, pane);
+  if (!canvas) return;
+  const tile = canvas.parentElement;
+  const capType = tile.querySelector('.tile-type');
+  const capId = tile.querySelector('.tile-id');
+  const vizSel = tile.querySelector('.tile-viz-select');
+  if (vizSel) vizSel.value = state.tileVizOverride[tileRow + ',' + tileCol] || '';
+
+  const hmVal = heatmap[tileRow + ',' + tileCol] || 0;
+  const tileKey = tileRow + ',' + tileCol;
+  const tileColor = state.tileColors[tileKey] || null;
+  drawHeatmapTile(canvas, hmVal, state.heatmap_signed, tileColor);
+
+  if (!view) {
+    tile.className = 'tile heatmap';
+    if (capType) capType.textContent = 'hm';
+    if (capId) {
+      const n = pane === 'tile2' ? state.tile_names2 : state.tile_names;
+      const lbl = n ? (n[tileKey] || 'r' + tileRow + 'c' + tileCol) : 'r' + tileRow + 'c' + tileCol;
+      capId.textContent = lbl;
+    }
+    return;
+  }
+
+  const { key } = view;
+  const viz = _effectiveViz(view, tileRow, tileCol);
+  tile.className = 'tile ' + viz;
+  if (capType) capType.textContent = viz + (state.tileVizOverride[tileKey] ? '*' : '');
+  if (capId) capId.textContent = view.module;
+
+  if (viz === 'series') {
+    drawSeries(canvas, series, key, tileColor);
+  } else if (viz === 'xy') {
+    const [xk, yk] = _xy_keys(key);
+    drawXY(canvas, series, xk, yk, tileColor);
+  } else if (viz === 'wxyz3d') {
+    const [wk, xk, yk, zk] = _wxyz_keys(key);
+    drawWXYZ3D(canvas, series, wk, xk, yk, zk, tileColor);
+  }
+}
+
+// ── Multi-tile group render ───────────────────────────────────────────────────
+function renderGroup(gid, tiles, views, series, heatmap, pane) {
+  pane = pane || 'tile';
+  const rs = tiles.map(t => t[0]);
+  const cs = tiles.map(t => t[1]);
+  const r0 = Math.min(...rs), r1 = Math.max(...rs);
+  const c0 = Math.min(...cs), c1 = Math.max(...cs);
+  const rows = r1 - r0 + 1, cols = c1 - c0 + 1;
+
+  const leadRow = tiles.reduce((a, b) => (a[0] < b[0] || (a[0] === b[0] && a[1] <= b[1])) ? a : b);
+  const view = views.find(v => v.tile_row === leadRow[0] && v.tile_col === leadRow[1]);
+
+  const leadCanvas = tileCanvas(leadRow[0], leadRow[1], pane);
+  if (!leadCanvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = leadCanvas.clientWidth * cols;
+  const h = leadCanvas.clientHeight * rows;
+  if (w <= 0 || h <= 0) return;
+  const off = document.createElement('canvas');
+  off.width = Math.round(w * dpr);
+  off.height = Math.round(h * dpr);
+  const octx = off.getContext('2d');
+  octx.fillStyle = '#050510';
+  octx.fillRect(0, 0, off.width, off.height);
+
+  if (!view) {
+    const cells = [];
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        cells.push({ r, c, v: heatmap[r + ',' + c] || 0 });
+      }
+    }
+    const cellW = w / cols, cellH = h / rows;
+    const n = HM_COLORS_SINGLE.length;
+    for (const cell of cells) {
+      if (cell.v <= 0) continue;
+      const idx = Math.min(n - 1, Math.max(0, Math.floor(Math.abs(cell.v) * n)));
+      octx.fillStyle = HM_COLORS_SINGLE[idx];
+      octx.fillRect(
+        (cell.c - c0) * cellW * dpr,
+        (cell.r - r0) * cellH * dpr,
+        cellW * dpr,
+        cellH * dpr,
+      );
+    }
+  } else {
+    const { key } = view;
+    const viz = _effectiveViz(view, leadRow[0], leadRow[1]);
+    if (viz === 'series') drawSeries(off, series, key, tileColor);
+    else if (viz === 'xy') {
+      const [xk, yk] = _xy_keys(key);
+      drawXY(off, series, xk, yk, tileColor);
+    } else if (viz === 'wxyz3d') {
+      const [wk, xk, yk, zk] = _wxyz_keys(key);
+      drawWXYZ3D(off, series, wk, xk, yk, zk, tileColor);
+    } else if (viz === 'heatmap') {
+      for (let r = r0; r <= r1; r++) {
+        for (let c = c0; c <= c1; c++) {
+          const v = heatmap[r + ',' + c] || 0;
+          if (v === 0) continue;
+          const n = HM_COLORS_SINGLE.length;
+          const idx = Math.min(n - 1, Math.max(0, Math.floor(Math.abs(v) * n)));
+          octx.fillStyle = tileColor || HM_COLORS_SINGLE[idx];
+          octx.fillRect(
+            (c - c0) * (w / cols) * dpr,
+            (r - r0) * (h / rows) * dpr,
+            (w / cols) * dpr,
+            (h / rows) * dpr,
+          );
+        }
+      }
+    }
+  }
+
+  const ctx = leadCanvas.getContext('2d');
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, leadCanvas.width, leadCanvas.height);
+  ctx.drawImage(off, 0, 0, off.width, off.height, 0, 0, leadCanvas.width, leadCanvas.height);
+
+  const leadTile = leadCanvas.parentElement;
+  if (leadTile) {
+    leadTile.classList.add('multi-tile');
+    const capId = leadTile.querySelector('.tile-id');
+    const capType = leadTile.querySelector('.tile-type');
+    if (view) {
+      const effViz = _effectiveViz(view, leadRow[0], leadRow[1]);
+      const isOverride = !!state.tileVizOverride[leadRow[0] + ',' + leadRow[1]];
+      if (capType) capType.textContent = effViz + 'x' + (rows * cols) + (isOverride ? '*' : '');
+      if (capId) capId.textContent = view.module;
+    } else {
+      if (capType) capType.textContent = 'hmx' + (rows * cols);
+    }
+  }
+}
+
+// ── Heatmap: single tile (value 0..1, signed) ────────────────────────────────
+// iter 4: signed heatmap — blue=positive, red=negative, intensity = abs(val)
+const HM_SIGNED_POS = ['#002040', '#004080', '#0070cc', '#00d4ff'];
+const HM_SIGNED_NEG = ['#400000', '#801818', '#cc2828', '#ff4444'];
+const HM_COLORS_SINGLE = ['#0d0020', '#300060', '#8800ff', '#ff8c00'];
+
+function drawHeatmapTile(canvas, val, signed, colorOverride) {
+  const dpr = window.devicePixelRatio || 1;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, W, H);
+  if (val === undefined || val === null || val === 0) return;
+  const intensity = Math.abs(val);
+  const sign = val < 0 ? -1 : 1;
+  if (signed) {
+    const palette = sign < 0 ? HM_SIGNED_NEG : HM_SIGNED_POS;
+    const n = palette.length;
+    const idx = Math.min(n - 1, Math.max(0, Math.floor(intensity * n)));
+    ctx.fillStyle = palette[idx];
+    ctx.fillRect(0, 0, W, H);
+    const grd = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W, H) * 0.5);
+    const [r0, g0, b0] = sign < 0 ? [255,68,68] : [0,212,255];
+    grd.addColorStop(0, `rgba(${r0},${g0},${b0},0.12)`);
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, W, H);
+  } else {
+    const n = HM_COLORS_SINGLE.length;
+    const idx = Math.min(n - 1, Math.max(0, Math.floor(intensity * n)));
+    ctx.fillStyle = colorOverride || HM_COLORS_SINGLE[idx];
+    ctx.fillRect(0, 0, W, H);
+    const grd = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W, H) * 0.5);
+    grd.addColorStop(0, 'rgba(255,140,0,0.08)');
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+function _xy_keys(key) {
+  // key is module.y; wires are module.x and module.y
+  const base = key.replace(/\.[^.]+$/, '');
+  return [base + '.x', base + '.y'];
+}
+
+function _wxyz_keys(key) {
+  // key is module.z; wires are module.w/x/y/z
+  const base = key.replace(/\.[^.]+$/, '');
+  return [base + '.w', base + '.x', base + '.y', base + '.z'];
+}
+
+// ── Wall redraw ──────────────────────────────────────────────────────────────
+function redrawWall(pane) {
+  pane = pane || 'tile';
+  if (pane === 'tile2') {
+    for (let r = 0; r < TILE_ROWS; r++)
+      for (let c = 0; c < TILE_COLS; c++)
+        renderTile(r, c, state.pane.views2, state.pane.series2, state.pane.heatmap2, 'tile2');
+  } else {
+    for (let r = 0; r < TILE_ROWS; r++)
+      for (let c = 0; c < TILE_COLS; c++)
+        renderTile(r, c, state.views, state.series, state.heatmap, 'tile');
+  }
+}
+
+// ── Control bar: param sliders ────────────────────────────────────────────────
+async function loadControl() {
+  try {
+    const r = await fetch('/api/control/' + state.name);
+    if (!r.ok) return;
+    const schema = await r.json();
+    buildParamSliders(schema.params || []);
+    document.getElementById('program-name').textContent = schema.name;
+  } catch(e) { /* no control schema */ }
+}
+
+function buildParamSliders(params) {
+  const bar = document.getElementById('control-bar');
+  // remove old param sliders (keep the label)
+  bar.querySelectorAll('.param-slider').forEach(el => el.remove());
+  state.params = {};
+  for (const p of params) {
+    const mid = p.module;
+    if (!state.params[mid]) state.params[mid] = {};
+    const step = p.step != null ? p.step : 0.01;
+    const unit = p.unit || '';
+    state.params[mid][p.key] = {
+      value: p.value, min: p.min, max: p.max, step, unit, el: null,
+    };
+    const wrap = document.createElement('div');
+    wrap.className = 'param-slider';
+    const dec = (step < 0.01) ? 4 : (step < 0.1 ? 3 : 2);
+    wrap.innerHTML = `
+      <label>${mid}.${p.key}${unit ? ' (' + unit + ')' : ''}</label>
+      <input type="range"
+        min="${p.min}" max="${p.max}" step="${step}"
+        value="${p.value}">
+      <span class="pval">${p.value.toFixed(dec)}${unit ? ' ' + unit : ''}</span>`;
+    const slider = wrap.querySelector('input');
+    const pval = wrap.querySelector('.pval');
+    slider.addEventListener('input', () => {
+      const v = parseFloat(slider.value);
+      pval.textContent = v.toFixed(dec) + (unit ? ' ' + unit : '');
+      state.params[mid][p.key].value = v;
+      if (state.ws && state.connected) {
+        state.ws.send(JSON.stringify({
+          type: 'param',
+          module: mid,
+          params: { [p.key]: v },
+        }));
+      }
+      // iter 5: log to sweep if recording
+      if (state.sweepRecording) {
+        state.sweepRec.push({
+          tick: state.tick, module: mid, key: p.key, value: v,
+        });
+      }
+    });
+    state.params[mid][p.key].el = slider;
+    bar.appendChild(wrap);
+  }
+}
+
+// ── WebSocket ────────────────────────────────────────────────────────────────
+function _backoffMs() {
+  // 2s -> 5s -> 10s (then capped at 10s; resets to 2s on successful open)
+  const a = state.ws_attempts;
+  if (a <= 0) return 2000;
+  if (a === 1) return 5000;
+  return 10000;
+}
+
+function connectWS(name, pane) {
+  pane = pane || 'tile';
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = proto + '//' + location.host + '/ws/' + (name || state.name);
+  const ws = new WebSocket(url);
+  if (pane === 'tile2') {
+    state.pane.ws2 = ws;
+  } else {
+    state.ws = ws;
+  }
+
+  ws.addEventListener('open', () => {
+    if (pane === 'tile2') {
+      state.pane.connected2 = true;
+      state.pane.ws_attempts2 = 0;
+    } else {
+      state.connected = true;
+      state.ws_attempts = 0;
+      setWSStatus('connecting', 'WS: INIT');
+      loadControl();
+      fetch('/api/views/' + state.name)
+        .then(r => r.json())
+        .then(data => { state.views = data.views || []; redrawWall(); })
+        .catch(() => {});
+    }
+  });
+
+  ws.addEventListener('message', ev => {
+    const t0 = performance.now();
+    try {
+      const snap = JSON.parse(ev.data);
+      applySnapshot(snap, pane);
+    } catch(e) { /* ignore */ }
+    if (pane === 'tile') {
+      const dt = (performance.now() - t0) * 1000;
+      // exponential moving avg of ws-send budget (us)
+      state.wsLatencyUs = 0.8 * state.wsLatencyUs + 0.2 * dt;
+    }
+  });
+
+  ws.addEventListener('close', () => {
+    if (pane === 'tile2') {
+      state.pane.connected2 = false;
+      const a = state.pane.ws_attempts2;
+      state.pane.ws_attempts2 = a + 1;
+      const delay = a <= 0 ? 2000 : a === 1 ? 5000 : 10000;
+      if (state.pane.split) setTimeout(() => connectWS(state.pane.name2, 'tile2'), delay);
+    } else {
+      state.connected = false;
+      setWSStatus('disconnected', 'WS: —');
+      const delay = _backoffMs();
+      state.ws_attempts += 1;
+      setTimeout(() => connectWS(state.name, 'tile'), delay);
+    }
+  });
+
+  ws.addEventListener('error', () => {
+    if (pane === 'tile') setWSStatus('disconnected', 'WS: ERR');
+  });
+}
+
+function setWSStatus(cls, text) {
+  const el = document.getElementById('ws-status');
+  el.className = cls;
+  el.textContent = text;
+}
+
+// ── WS RTT ping (iter 4) ────────────────────────────────────────────────────
+function _sendPing() {
+  if (!state.ws || !state.connected) return;
+  state.pingSent = performance.now();
+  try {
+    state.ws.send(JSON.stringify({ type: 'ping', _t: state.pingSent }));
+  } catch(e) { /* ignore */ }
+}
+setInterval(_sendPing, 3000);
+
+// ── Snapshot apply ───────────────────────────────────────────────────────────
+// pane: 'tile' (pane 1, default) or 'tile2' (pane 2)
+function applySnapshot(snap, pane) {
+  pane = pane || 'tile';
+
+  // handle ping response (iter 4: WS RTT)
+  if (snap._pong && state.pingSent) {
+    state.pingRtt = (performance.now() - state.pingSent);
+    state.pingSamples.push(state.pingRtt);
+    if (state.pingSamples.length > 10) state.pingSamples.shift();
+    state.pingSent = 0;
+    const avg = state.pingSamples.reduce((a, b) => a + b, 0) / state.pingSamples.length;
+    const badge = document.getElementById('rtt-badge');
+    badge.textContent = 'RTT ' + Math.round(avg) + 'ms';
+    badge.className = avg < 30 ? 'good' : avg < 80 ? 'fair' : 'poor';
+  }
+
+  // latency (iter 4)
+  if (snap._lat_eng != null) {
+    state.engineLatencyUs = snap._lat_eng;
+    document.getElementById('lat-eng').textContent = Math.round(snap._lat_eng);
+  }
+  if (snap._lat_ws != null) {
+    state.wsLatencyUs = snap._lat_ws;
+    document.getElementById('lat-ws').textContent = Math.round(snap._lat_ws);
+  }
+
+  if (pane === 'tile2') {
+    state.pane.tick2 = snap.t ?? state.pane.tick2;
+    state.pane.running2 = snap.running ?? state.pane.running2;
+    if (snap.diff) {
+      if (snap.bus) for (const [k, v] of Object.entries(snap.bus)) state.pane.bus2[k] = v;
+      if (snap.series) for (const [k, v] of Object.entries(snap.series)) state.pane.series2[k] = v;
+    } else {
+      state.pane.bus2 = snap.bus ?? {};
+      state.pane.series2 = snap.series ?? {};
+      if (snap.views) state.pane.views2 = snap.views;
+    }
+    state.pane.heatmap2 = _bus_to_heatmap_decayed_pane(state.pane.bus2, state.pane.views2, 'pane');
+    const s2 = document.getElementById('pane2-status');
+    if (s2) s2.textContent = 't=' + state.pane.tick2 + ' ' + (state.pane.running2 ? 'LIVE' : 'PAUSED');
+    redrawWall('tile2');
+    return;
+  }
+
+  state.tick = snap.t ?? state.tick;
+  state.running = snap.running ?? state.running;
+
+  if (snap.diff) {
+    if (snap.bus) for (const [k, v] of Object.entries(snap.bus)) state.bus[k] = v;
+    if (snap.series) for (const [k, v] of Object.entries(snap.series)) state.series[k] = v;
+  } else {
+    state.bus = snap.bus ?? {};
+    state.series = snap.series ?? {};
+    if (snap.views) state.views = snap.views;
+  }
+
+  if (snap.window != null) state.window = snap.window;
+
+  state.heatmap = _bus_to_heatmap_decayed(state.bus, state.views);
+
+  document.getElementById('tick-counter').textContent = 't=' + state.tick;
+  document.getElementById('status').className = state.running ? 'live' : 'paused';
+  document.getElementById('status').textContent = state.running ? 'LIVE' : 'PAUSED';
+  setWSStatus('connected', 'WS: LIVE');
+
+  // iter 4: record WS frames to .qbf (if recording)
+  if (state.recording) {
+    state.recordBuffer.push(JSON.parse(JSON.stringify({
+      t: state.tick, bus: JSON.parse(JSON.stringify(state.bus)),
+      series: JSON.parse(JSON.stringify(state.series)),
+      views: JSON.parse(JSON.stringify(state.views)),
+    })));
+    const rs = document.getElementById('record-status');
+    if (rs) rs.textContent = 'REC ' + state.recordBuffer.length + '/' + state.recordMax;
+    if (state.recordBuffer.length >= state.recordMax) {
+      state.recording = false;
+      document.getElementById('record-btn').classList.remove('recording');
+      _finalizeRecording();
+    }
+  }
+
+  redrawWall('tile');
+
+  // iter 5: refresh bus inspector if open
+  if (state.busInspectorTile) {
+    showBusInspector(state.busInspectorTile.row, state.busInspectorTile.col, state.busInspectorTile.pane);
+  }
+}
+
+// ── Heatmap: spatial bus-key -> tile mapping (time-decayed) ────────────────
+// Maps bus .cv or H4-axis (.w/.x/.y/.z) keys to tile slots (row-major,
+// cycling through 16 tiles). Each cell holds a ring of recent intensities
+// that exponentially decay each tick; the displayed value is the max of
+// the recent ring (so a transient signal still lights up briefly).
+// iter 4: each ring entry is {i: intensity, s: sign} so signed heatmap
+// renders red (s=-1) or blue (s=+1).
+function _bus_to_heatmap_decayed(bus, views) {
+  const hm = {};
+  // 1. decay every cell in the history
+  for (const k of Object.keys(state.heatmap_hist)) {
+    const ring = state.heatmap_hist[k];
+    if (!ring || ring.length === 0) {
+      delete state.heatmap_hist[k];
+      continue;
+    }
+    const entry = ring[0];
+    if (typeof entry === 'number') {
+      // migrate: old numeric format -> {i, s} object
+      ring[0] = { i: entry, s: 1 };
+    }
+    const decayed = { i: entry.i * state.heatmap_decay, s: entry.s };
+    if (decayed.i < 0.01) {
+      delete state.heatmap_hist[k];
+    } else {
+      ring[0] = decayed;
+    }
+  }
+  // 2. push new values for cells that changed this tick
+  const keys = Object.keys(bus).filter(k =>
+    k.endsWith('.cv') || k === 'ui.tap' ||
+    /\.[wxyz]$/.test(k)
+  );
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    const v = bus[k];
+    if (typeof v !== 'number' || !isFinite(v)) continue;
+    const row = Math.floor(i / TILE_COLS) % TILE_ROWS;
+    const col = i % TILE_COLS;
+    const key = row + ',' + col;
+    const intensity = Math.min(1, Math.abs(v));
+    const sign = v < 0 ? -1 : 1;
+    if (!state.heatmap_hist[key]) state.heatmap_hist[key] = [{ i: 0, s: 1 }];
+    const cur = state.heatmap_hist[key][0];
+    // keep max intensity, and most recent sign (newer sign wins)
+    state.heatmap_hist[key][0] = {
+      i: Math.max(cur.i, intensity),
+      s: intensity >= cur.i ? sign : cur.s,
+    };
+    const entry = state.heatmap_hist[key][0];
+    hm[key] = entry.s * entry.i; // signed: negative = red, positive = blue
+  }
+  // 3. surface residuals
+  for (const [k, ring] of Object.entries(state.heatmap_hist)) {
+    if (!(k in hm) && ring[0].i > 0.01) {
+      hm[k] = ring[0].s * ring[0].i;
+    }
+  }
+  return hm;
+}
+
+// Pane-2 variant: uses pane state fields instead of global state
+function _bus_to_heatmap_decayed_pane(bus, views, _key) {
+  const hm = {};
+  const hist = state.pane.heatmap_hist2 || {};
+  // decay
+  for (const k of Object.keys(hist)) {
+    const ring = hist[k];
+    if (!ring || ring.length === 0) { delete hist[k]; continue; }
+    const entry = typeof ring[0] === 'number'
+      ? { i: ring[0], s: 1 }
+      : ring[0];
+    const decayed = { i: entry.i * state.heatmap_decay, s: entry.s };
+    if (decayed.i < 0.01) delete hist[k];
+    else ring[0] = decayed;
+  }
+  // push new values
+  const keys = Object.keys(bus).filter(k =>
+    k.endsWith('.cv') || k === 'ui.tap' || /\.[wxyz]$/.test(k)
+  );
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    const v = bus[k];
+    if (typeof v !== 'number' || !isFinite(v)) continue;
+    const row = Math.floor(i / TILE_COLS) % TILE_ROWS;
+    const col = i % TILE_COLS;
+    const key = row + ',' + col;
+    const intensity = Math.min(1, Math.abs(v));
+    const sign = v < 0 ? -1 : 1;
+    if (!hist[key]) hist[key] = [{ i: 0, s: 1 }];
+    const cur = hist[key][0];
+    hist[key][0] = {
+      i: Math.max(cur.i, intensity),
+      s: intensity >= cur.i ? sign : cur.s,
+    };
+    const entry = hist[key][0];
+    hm[key] = entry.s * entry.i;
+  }
+  state.pane.heatmap_hist2 = hist;
+  // surface residuals
+  for (const [k, ring] of Object.entries(hist)) {
+    if (!(k in hm) && ring[0].i > 0.01) hm[k] = ring[0].s * ring[0].i;
+  }
+  return hm;
+}
+
+// ── UI controls ──────────────────────────────────────────────────────────────
+function _doTap() {
+  if (state.ws && state.connected) {
+    state.ws.send(JSON.stringify({ type: 'tap' }));
+  } else {
+    fetch('/api/tap/' + state.name, { method: 'POST' }).catch(() => {});
+  }
+}
+function _doReset() {
+  fetch('/api/batch/' + state.name, { method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ ticks: 0, reset: true }) }).catch(() => {});
+  state.tick = 0; state.bus = {}; state.series = {};
+  state.heatmap = {}; state.heatmap_hist = {};
+  document.getElementById('tick-counter').textContent = 't=0';
+  redrawWall();
+}
+function _doClearGroups() {
+  state.groups = {}; saveState();
+  updateGroupBadges('tile');
+  redrawWall('tile');
+}
+function _adjustSpeed(delta) {
+  const s = document.getElementById('speed-slider');
+  s.value = Math.min(60, Math.max(1, parseInt(s.value) + delta));
+  state.speed = parseInt(s.value);
+  document.getElementById('speed-val').textContent = state.speed + ' fps';
+  saveState();
+  if (state.loopRunning) { stopLoop(); startLoop(); }
+}
+
+document.getElementById('tap-btn').addEventListener('click', _doTap);
+
+const speedSlider = document.getElementById('speed-slider');
+const speedVal = document.getElementById('speed-val');
+speedSlider.value = state.speed;
+speedVal.textContent = state.speed + ' fps';
+speedSlider.addEventListener('input', () => {
+  state.speed = parseInt(speedSlider.value);
+  speedVal.textContent = state.speed + ' fps';
+  saveState();
+  if (state.loopRunning) { stopLoop(); startLoop(); }
+});
+// Mouse wheel on speed slider (iter 5): ±1 fps
+speedSlider.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  _adjustSpeed(e.deltaY < 0 ? 1 : -1);
+}, { passive: false });
+
+document.getElementById('clear-groups-btn').addEventListener('click', _doClearGroups);
+document.getElementById('reset-btn').addEventListener('click', _doReset);
+
+// iter 6: fullscreen button
+document.getElementById('fullscreen-btn').addEventListener('click', toggleFullscreen);
+
+// iter 6: favorites filter
+document.getElementById('fav-filter-btn').addEventListener('click', toggleFavoritesOnly);
+
+// iter 6: cheat sheet
+document.getElementById('cheatsheet-overlay-close').addEventListener('click', () => {
+  document.getElementById('cheatsheet-overlay').style.display = 'none';
+});
+
+// iter 6: color picker
+document.getElementById('tile-color-picker').addEventListener('input', (e) => {
+  if (state.colorPickerTile) {
+    const { row, col } = state.colorPickerTile;
+    applyTileColor(row, col, e.target.value);
+  }
+});
+document.getElementById('tile-color-clear').addEventListener('click', () => {
+  if (state.colorPickerTile) {
+    const { row, col } = state.colorPickerTile;
+    delete state.tileColors[row + ',' + col];
+    saveState();
+    redrawWall();
+    closeColorPicker();
+  }
+});
+document.getElementById('tile-color-cancel').addEventListener('click', closeColorPicker);
+
+// ── Keyboard shortcuts (iter 4) ──────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  const tag = e.target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (e.key === ' ') { e.preventDefault(); _doTap(); }
+  else if (e.key === 'r' || e.key === 'R') _doReset();
+  else if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '=')) {
+    e.preventDefault(); zoomBy(0.1);
+  }
+  else if ((e.ctrlKey || e.metaKey) && (e.key === '-' || e.key === '_')) {
+    e.preventDefault(); zoomBy(-0.1);
+  }
+  else if ((e.ctrlKey || e.metaKey) && e.key === '0') {
+    e.preventDefault(); zoomFit();
+  }
+  else if (e.key === '+' || e.key === '=') _adjustSpeed(+5);
+  else if (e.key === '-' || e.key === '_') _adjustSpeed(-5);
+  else if (e.key === 'g' || e.key === 'G') _doClearGroups();
+  else if (e.key === 'f' || e.key === 'F') { e.preventDefault(); toggleFullscreen(); }
+  else if (e.key === '?' || (e.shiftKey && e.key === '/')) { e.preventDefault(); toggleCheatsheet(); }
+  else if (e.key === '*') { e.preventDefault(); toggleFavoritesOnly(); }
+  else if (e.key === 'Escape') {
+    const cs = document.getElementById('cheatsheet-overlay');
+    if (cs && cs.style.display === 'block') { cs.style.display = 'none'; return; }
+    const cp = document.getElementById('tile-color-popup');
+    if (cp && cp.style.display === 'flex') { closeColorPicker(); return; }
+    hideBusInspector();
+  }
+});
+
+// ── Preset buttons (iter 4) ──────────────────────────────────────────────
+_refreshPresetSelect();
+document.getElementById('preset-select').addEventListener('change', (e) => {
+  const name = e.target.value;
+  if (name) loadPreset(name);
+  e.target.value = '';
+});
+document.getElementById('preset-save-btn').addEventListener('click', () => {
+  const inp = document.getElementById('preset-name');
+  savePreset(inp.value);
+  inp.value = '';
+});
+document.getElementById('preset-load-btn').addEventListener('click', () => {
+  const name = document.getElementById('preset-select').value;
+  if (name) loadPreset(name);
+});
+document.getElementById('preset-del-btn').addEventListener('click', () => {
+  const name = document.getElementById('preset-select').value;
+  if (name) deletePreset(name);
+});
+
+// ── Record / Replay (iter 4) ────────────────────────────────────────────
+// Records live WS snapshots to a flat array, then POSTs to /api/record
+// to persist as a .qbf shard. Replay POSTs the array back to drive a
+// fresh engine (bit-identical).
+function _finalizeRecording() {
+  if (!state.recordBuffer.length) return;
+  const payload = JSON.stringify({
+    program: state.name,
+    frames: state.recordBuffer,
+  });
+  fetch('/api/record/' + state.name, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: payload,
+  }).then(r => r.json()).then(d => {
+    const rs = document.getElementById('record-status');
+    if (rs) rs.textContent = 'SAVED run=' + (d.run_id || '?');
+  }).catch(() => {
+    const rs = document.getElementById('record-status');
+    if (rs) rs.textContent = 'ERR save failed';
+  });
+  state.recordBuffer = [];
+}
+
+document.getElementById('record-btn').addEventListener('click', () => {
+  if (state.recording) {
+    state.recording = false;
+    document.getElementById('record-btn').classList.remove('recording');
+    _finalizeRecording();
+  } else {
+    state.recording = true;
+    state.recordBuffer = [];
+    document.getElementById('record-btn').classList.add('recording');
+    const rs = document.getElementById('record-status');
+    if (rs) rs.textContent = 'REC 0/' + state.recordMax;
+  }
+});
+
+document.getElementById('replay-btn').addEventListener('click', () => {
+  if (state.replaying) return;
+  state.replaying = true;
+  document.getElementById('replay-btn').classList.add('replaying');
+  fetch('/api/replay_runs/' + state.name)
+    .then(r => r.json())
+    .then(async (d) => {
+      if (!d.runs || d.runs.length === 0) { state.replaying = false; return; }
+      const run_id = d.runs[d.runs.length - 1].rid;
+      // fetch the run
+      const r2 = await fetch('/api/replay/' + state.name + '?run_id=' + run_id);
+      const frames = await r2.json();
+      if (!Array.isArray(frames)) { state.replaying = false; return; }
+      // replay: drive the engine through the recorded frames
+      for (const frame of frames) {
+        state.tick = frame.t;
+        state.bus = frame.bus || {};
+        state.series = frame.series || {};
+        state.heatmap = _bus_to_heatmap_decayed(state.bus, state.views);
+        document.getElementById('tick-counter').textContent = 't=' + state.tick;
+        redrawWall('tile');
+        await new Promise(r => setTimeout(r, 16)); // ~60fps
+      }
+      state.replaying = false;
+      document.getElementById('replay-btn').classList.remove('replaying');
+    })
+    .catch(() => { state.replaying = false; });
+});
+
+// ── Split view (iter 4) ─────────────────────────────────────────────────
+async function _loadPrograms() {
+  const r = await fetch('/api/programs');
+  const d = await r.json();
+  const sel = document.getElementById('pane2-select');
+  sel.innerHTML = '';
+  for (const p of d.programs) {
+    const opt = document.createElement('option');
+    opt.value = p;
+    opt.textContent = p;
+    sel.appendChild(opt);
+  }
+}
+
+function _toggleSplit() {
+  state.pane.split = !state.pane.split;
+  const host = document.getElementById('pane-host');
+  const info = document.getElementById('pane2-host');
+  const btn = document.getElementById('split-btn');
+  if (state.pane.split) {
+    host.classList.add('split');
+    info.style.display = 'flex';
+    btn.textContent = 'SPLIT*';
+    if (!state.pane.name2) {
+      const sel = document.getElementById('pane2-select');
+      state.pane.name2 = sel.value || state.name;
+      if (sel.value) sel.value = state.pane.name2;
+    }
+    if (!state.pane.ws2 || !state.pane.connected2) {
+      connectWS(state.pane.name2, 'tile2');
+    }
+  } else {
+    host.classList.remove('split');
+    info.style.display = 'none';
+    btn.textContent = 'SPLIT';
+    if (state.pane.ws2) {
+      state.pane.ws2.close();
+      state.pane.ws2 = null;
+      state.pane.connected2 = false;
+    }
+  }
+}
+document.getElementById('split-btn').addEventListener('click', _toggleSplit);
+document.getElementById('pane2-select').addEventListener('change', (e) => {
+  const name = e.target.value;
+  if (!name) return;
+  state.pane.name2 = name;
+  // reconnect pane 2 with new program
+  if (state.pane.split && state.pane.ws2) {
+    state.pane.ws2.close();
+    state.pane.ws2 = null;
+    connectWS(name, 'tile2');
+  }
+});
+
+// ── Fetch loop (no WS) ─────────────────────────────────────────────────────
+let fetchTimer = null;
+
+async function fetchTick() {
+  if (!state.connected) {
+    try {
+      const r = await fetch('/api/snapshot/' + state.name);
+      if (r.ok) applySnapshot(await r.json());
+    } catch(e) {}
+  }
+  if (state.loopRunning) fetchTimer = setTimeout(fetchTick, 1000 / state.speed);
+}
+
+function startLoop() {
+  state.loopRunning = true;
+  fetchTick();
+}
+
+function stopLoop() {
+  state.loopRunning = false;
+  if (fetchTimer) { clearTimeout(fetchTimer); fetchTimer = null; }
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+loadState();
+applyTheme(state.theme);
+applyAccentColor();
+setupZoom();
+document.getElementById('program-name').textContent = state.name;
+updateGroupBadges('tile');
+_refreshPresetSelect();
+_loadPrograms();
+refreshProgramSwitcher();
+const _accentPicker = document.getElementById('accent-picker');
+if (_accentPicker) {
+  _accentPicker.value = state.accentColor || '#ff8c00';
+  _accentPicker.addEventListener('input', (e) => {
+    state.accentColor = e.target.value;
+    applyAccentColor();
+  });
+}
+const _accentClear = document.getElementById('accent-clear-btn');
+if (_accentClear) {
+  _accentClear.addEventListener('click', () => {
+    state.accentColor = null;
+    applyAccentColor();
+    if (_accentPicker) _accentPicker.value = '#ff8c00';
+    saveState();
+  });
+}
+document.getElementById('prog-switcher').addEventListener('change', (e) => {
+  _switchProgram(e.target.value);
+});
+document.getElementById('theme-select').addEventListener('change', (e) => {
+  applyTheme(e.target.value);
+});
+// Sweep bar wire-up (iter 5)
+document.getElementById('sweep-record-btn').addEventListener('click', () => {
+  if (state.sweepRecording) _stopSweepRecording();
+  else _startSweepRecording();
+});
+document.getElementById('sweep-replay-btn').addEventListener('click', () => {
+  if (state.sweepReplaying) _stopSweepReplay();
+  else _startSweepReplay();
+});
+document.getElementById('sweep-stop-btn').addEventListener('click', _stopSweepReplay);
+startLoop();
+connectWS(state.name, 'tile');
+ </script>
+</body>
+</html>

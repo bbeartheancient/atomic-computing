@@ -57,6 +57,23 @@ def _plain(obj):
             if hasattr(obj, k)}
 
 
+_VIZ_OUTPUTS = {
+    "viz_series": "cv",
+    "viz_xy": "y",
+    "viz_wxyz3d": "z",
+}
+
+
+def _patch_views(blocks):
+    views = []
+    for b in blocks:
+        output = _VIZ_OUTPUTS.get(b.primitive)
+        if output is not None:
+            views.append({"id": b.id, "module": b.id, "output": output,
+                         "as": "series" if b.primitive == "viz_series" else b.primitive[4:]})
+    return views
+
+
 @dataclass
 class Block:
     """One gate instance: id + primitive + param overrides (lowercase)."""
@@ -281,10 +298,14 @@ class Program:
             modules.append({"id": b.id,
                             "primitive": atom.name if atom else b.primitive,
                             "params": dict(b.params or {})})
+        # auto-generate views for viz_* sinks if self.views is empty
+        views = list(self.views)
+        if not views:
+            views = _patch_views(self.blocks)
         return {"modules": modules,
                 "wires": [{"from": w.src, "to": w.dst}
                           for w in self.wires],
-                "views": list(self.views)}
+                "views": views}
 
     def to_eel2(self):
         """Concatenated per-block EEL2 bodies (teaching view).

@@ -16,6 +16,9 @@ hoa64-venv/
 # portable trace shards (stored under ~/.runtime/atomic_qbf, not in repo)
 *.qbf
 *.mv2
+# sqlite runtime artifacts
+*.db
+*.db-journal
 # os/editor
 .DS_Store
 .vscode/

@@ -93,8 +93,11 @@ def decompose_python(source, name="decomposed", description=""):
                 # string literals -> const 0 (not a signal)
                 return fresh_const(0)
             raise DecomposeError("unsupported constant %r" % node.value)
-        if isinstance(node, ast.Num):  # py <3.8
-            return fresh_const(node.n)
+        if isinstance(node, ast.Constant):
+            v = node.value
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return fresh_const(v)
+            raise DecomposeError("unsupported constant %r" % v)
         if isinstance(node, ast.Name):
             cid = "var_%s" % node.id
             if not any(b.id == cid for b in blocks):
