@@ -193,3 +193,43 @@ The engine takes an optional `trace=` observer: pure read-only
   `fabric/docs/h4-bridge-codec.md` + `h4-layer-gating.md`.
 - EEL2 runtime traps: `compile()` must wrap parse output in a block node;
   `Proxy.has` must return true for all globals or patches break.
+
+## Development Tasks (operator-supplied, queued)
+
+### ADD FUNCTION: video generation
+1. Duty VLLM already has trained text encoder abilitied for MiniMax H3 (H3
+   weights should still be downloaded).
+2. H3 FastVideo cuts generation times down to minimum:
+   https://huggingface.co/barelymining/ComfyUI-MiniMax-H3-FastVideo
+3. Video generation requests can load the H3 T2VA pipeline on **GPU1** while
+   leaving the duty VLLM (Qwen 27B) loaded on **GPU0** — the bicameral split
+   becomes a real two-model pipeline, not just two Engines over host RAM
+   (`atomic.bridge.HostBridge` stays the wire contract; the GPU pair becomes
+   the actual GPU0/GPU1 topology).
+5. Video generation pipeline is set up like **"infinite slop"** or
+   **"interdimensional cable"** — continuous generation, never-ending feed:
+   - https://github.com/reactor-team/infinite-livestream
+   - https://haoailab.com/blogs/fasth3-preview/
+   The atomic-computing analog: a `viz_wxyz3d` / `viz_video` sink consumes
+   the H3 frames as a live stream (per-tick = per-frame), renders onto the
+   tile wall, and the trace is captured via `dma_trace` so every frame is
+   portable through QBF.
+7. Videos created by infinite-livestream are sent to a **Jellyfin** server
+   as a randomized live channel — surfaced via **HDHomeRun** or **M3U Tuner**
+   so any LAN client can tune in. The atomic-computing analog: a
+   `live_export` sink tails the active program, ffmpeg-muxes into an
+   HLS/DASH segment under the Jellyfin `Live TV` ingest, and a small
+   scheduler rotates the channel so a fleet of `infinite-livestream`
+   instances becomes a randomized multichannel universe.
+
+Notes for the implementation turn (do NOT pre-build; the task is queued):
+- H3 + FastVideo live in ComfyUI space; the harness treats them as an
+  **external GPU0/1 service** (subprocess + a small HTTP/gRPC bridge, not
+  vendored). The atomic side only sees `frames: List[bytes]` per tick.
+- The "infinite slop" loop is the SAME shape as our `Swarm.run(parallel=True)`
+  + `Evolver.run_swarm`: cheap active params => cheap active prompts =>
+  parallel video streams. The teacher registry's domain vocab (iter 13)
+  becomes the prompt bank; H4 consensus picks the next prompt.
+- Jellyfin + HDHomeRun is an OS-level concern (jellyfin package,
+  hdhr-stream.c, M3U at `/etc/jellyfin/livetv/*.m3u`); the harness
+  documents the topology, does not vendor the stack.
