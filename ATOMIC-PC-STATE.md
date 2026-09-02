@@ -929,7 +929,37 @@ Built, all in ~/ATOMIC-PC (pure Python, zero sibling changes):
   * tests/test_evolve.py (4) + tests/test_bridge.py (5 + wgsl shape
     covered in selftest): 9 new tests; total suite 130 passed + 1
     skipped from ~/ATOMIC-PC, 131 passed from $HOME (~4.2s).
-    No sibling changes (only ~/ATOMIC-PC edited).
+No sibling changes (only ~/ATOMIC-PC edited).
+
+## Next iteration — iter 23: Push to remote + new goal
+
+Pending todos at end of iter 22:
+1. Push 2 new commits (dc24d05, 6a71d65) to `origin/main` on
+   `https://github.com/bbeartheancient/atomic-computing.git`
+   (`git push -u origin main`). Guardrails from AGENTS.md apply:
+   no force, no amend on failure.
+2. Pick next goal. Roadmap S1-S10 are closed (iter 15); iter 16
+   added retrieval (orthogonal). Iter 17-22 added UI/demos/polish.
+   Candidate next goals (operator chooses):
+   - (A) **wgsl target hard-validate** — install `naga` CLI if absent;
+     pin byte-identical WGSL → engine parity on a small H4 patch;
+     run on the live GPU (vLLM owns GPU0 VRAM, so run a compute-only
+     naga validation pass at minimum).
+   - (B) **bicameral live demo** — port `examples/gated_clock_counter`
+     to two Engines (subconscious = `clock_bpm@60`, conscious =
+     `accum -> smooth -> viz_series`) pipelined through `HostBridge`
+     and visualize the bridge depth on the UI tile wall.
+   - (C) **teach domain expansion** — add 6-10 more teacher examples
+     across `spatial`/`medical`/`audio`/`control`/`signal` (currently
+     4), keyed off CORE concepts; persist the registry via QBF in a
+     `examples/teach_domain_kb.py` script.
+   - (D) **UI multi-window** — open the same program in two browser
+     windows synced via QBF trace replay (the `record`/`replay`
+     endpoints become the wire format between windows).
+   - (E) **decompose for EEL2** — extend `decompose_eel2` to handle
+     full patches, not just expressions; round-trip via fabric
+     `validate_patch` (currently only expressions decompose).
+3. Update AGENTS.md `Next iteration` section after the goal is picked.
 
 Result: `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest`
 -> 11/11 ok (~2.0s). Full suite 131 passed from $HOME.
