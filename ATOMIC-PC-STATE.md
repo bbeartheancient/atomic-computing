@@ -1784,3 +1784,71 @@ Result: `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest`
 `naga --version` -> 30.0.1, `naga /tmp/wgsl_*.wgsl` -> "Validation successful"
 on H4 + extended + simple WGSL.
 Working tree clean, no sibling changes.
+
+## Iteration 25 — Goal B: bicameral live demo (2026-09-02)
+
+Operator chose goal B. Built, all in ~/ATOMIC-PC (pure Python, zero sibling changes):
+
+  * `examples/bicameral_pipeline.py` — end-to-end demo: sub=clock_bpm@60
+    (clock_source), con=accum->smooth->viz_series (counter_display), wired
+    through HostBridge(bridge_latency=1). 90 ticks -> accum=2.0 (two
+    beats at 60bpm), smooth~1.945, bridge depth=1 (one beat in flight).
+
+  * `atomic/ui/bicameral_viewer.py` — BicameralViewer: wraps
+    BicameralPipeline, exposes snapshot() with sub/con/bridge keys
+    (sub bus + series, con bus + series, bridge {depth, latency,
+    pushed, popped, queued, history, use_h4}). tick_once() records
+    depth history (ring, max 512). batch() runs N ticks. ws_broadcast
+    + ws_connect/ws_disconnect for WS streaming.
+
+  * `atomic/ui/programs.py` — `_bicameral_clock()` returns
+    {type:"bicameral", sub, con, bridge_map, bridge_latency, use_h4}.
+    build_bicameral() / all_bicameral_programs() API.  _REGISTRY holds
+    the callable.
+
+  * `atomic/ui/server.py` — lifespan registers both Viewer (regular) and
+    BicameralViewer (bicameral). New endpoints: GET /api/bicameral
+    (list programs), GET /api/bicameral/{name}/snapshot,
+    POST /api/bicameral/{name}/batch, GET /api/bicameral/{name}/bridge,
+    WS /ws/bicameral/{name} (live bicameral tick stream).  /api/programs
+    now includes `bicameral` key listing bicameral programs.
+
+  * `atomic/ui/static/index.html` — bridge state fields
+    (bridgeDepth, bridgeLatency, bridgeHistory, bridgeH4). Bridge depth
+    badge in header ("bridge <depth>/<latency>", shown for bicameral).
+    applySnapshot handles snap.sub/snap.con/snap.bridge (flattens con bus
+    as primary; sub bus routes to pane2). connectWS uses
+    /ws/bicameral/<name> for bicameral programs. Program switcher
+    fetches bicameral list from /api/programs, shows them in optgroup.
+    Pane2 select includes bicameral programs.
+
+  * `tests/test_iter25.py` (5 new tests): bicameral accum=2.0,
+    bridge depth=1, BicameralViewer snapshot, UI server endpoints,
+    /api/programs includes bicameral. Total suite 196 passed.
+
+  * `atomic/selftest.py` section 24 (5 checks): bicameral accum=2.0,
+    bridge depth=1, BicameralViewer snapshot sub/con/bridge, UI
+    /api/bicameral endpoints, /api/programs bicameral key.
+
+Verification:
+```
+cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest
+  -> 24/24 ok (~5s)
+cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m pytest tests -q
+  -> 196 passed (~8s, +5 iter25)
+~/runtime/.venv/bin/python -m examples.bicameral_pipeline
+  -> [bicameral pipeline] ok
+FastAPI testclient: /api/bicameral -> {'programs': ['bicameral_clock']}
+                   /api/bicameral/bicameral_clock/batch(ticks=90)
+                   -> bridge depth=1, accum=2.0, smooth~1.945
+```
+
+Docs updates: README.md (24 sections, 196 tests, 6 demos, bicameral in
+UI), AGENTS.md (6 demos, 24-section selftest, bicameral endpoints),
+this file (iter 25 log).
+
+Result: `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest`
+-> 24/24 ok (~5s).
+`cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m pytest tests -q` ->
+196 passed (~8s, +5 iter25).
+No sibling changes (only ~/ATOMIC-PC edited).

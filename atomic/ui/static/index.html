@@ -490,6 +490,9 @@
   <span id="latency-overlay" title="Per-tick engine + ws-send budget (us)">
     eng <span id="lat-eng">0</span>us · ws <span id="lat-ws">0</span>us
   </span>
+  <span id="bridge-badge" title="Bicameral bridge: depth + latency + H4" style="display:none">
+    bridge <span id="bridge-depth">0</span>/<span id="bridge-lat">1</span>
+  </span>
   <button id="clear-groups-btn" class="hdr-btn" title="Clear tile groups (g)">Groups</button>
   <button id="reset-btn" class="hdr-btn" title="Reset engine to t=0 (r)">Reset</button>
   <button id="record-btn" class="hdr-btn" title="Record live WS to local .qbf">REC</button>
@@ -645,6 +648,10 @@ const state = {
   pingSent: 0, pingRtt: 0, pingSamples: [], // iter 4: WS RTT
   engineLatencyUs: 0,  // iter 4: per-tick engine budget (us)
   wsLatencyUs: 0,      // iter 4: per-tick WS send budget (us)
+  bridgeDepth: 0,      // iter 25: bicameral bridge depth (queue size)
+  bridgeLatency: 0,    // iter 25: bicameral bridge configured latency
+  bridgeHistory: [],   // iter 25: bridge depth history (last 64 ticks)
+  bridgeH4: false,     // iter 25: bridge H4 compact flag
   theme: _saved.theme || 'dark',
   zoom: _saved.zoom || 1.0,         // iter 7: tile-wall zoom level
   accentColor: _saved.accentColor || null,  // iter 7: optional accent override
@@ -903,17 +910,31 @@ async function _refreshProgramSwitcher() {
   try {
     const r = await fetch('/api/programs');
     const d = await r.json();
-    for (const p of d.programs) {
+    const all = (d.programs || []);
+    const bi = d.bicameral || [];
+    state.bicameralPrograms = bi;
+    for (const p of all) {
       const opt = document.createElement('option');
       opt.value = p; opt.textContent = p;
       if (p === state.name) opt.selected = true;
       sel.appendChild(opt);
     }
+    if (bi.length) {
+      const og = document.createElement('optgroup');
+      og.label = 'bicameral (sub ⇄ bridge ⇄ con)';
+      for (const p of bi) {
+        const opt = document.createElement('option');
+        opt.value = p; opt.textContent = p;
+        if (p === state.name) opt.selected = true;
+        og.appendChild(opt);
+      }
+      sel.appendChild(og);
+    }
     // Also populate pane2 select (existing behaviour, iter 4)
     const sel2 = document.getElementById('pane2-select');
     if (sel2) {
       sel2.innerHTML = '';
-      for (const p of d.programs) {
+      for (const p of [...all, ...bi]) {
         const opt2 = document.createElement('option');
         opt2.value = p; opt2.textContent = p;
         sel2.appendChild(opt2);
@@ -931,15 +952,18 @@ function _switchProgram(name) {
   state.heatmap = {}; state.heatmap_hist = {};
   state.groups = {}; state.tile_names = {};
   state.sweepRec = []; state.sweepReplaying = false;
+  state.bridgeHistory = []; state.bridgeDepth = 0;
   // Close old WS, reconnect
   if (state.ws) { state.ws.close(); state.ws = null; }
   state.connected = false;
   setWSStatus('connecting', 'WS: INIT');
   connectWS(name, 'tile');
-  // Reload control schema
+  // Reload control schema (iter 25: route by program type)
   loadControl();
   // Reload views
-  fetch('/api/views/' + name).then(r => r.json()).then(data => {
+  const isBi = state.bicameralPrograms && state.bicameralPrograms.includes(name);
+  const viewsUrl = isBi ? '/api/bicameral/' + name + '/snapshot' : '/api/views/' + name;
+  fetch(viewsUrl).then(r => r.json()).then(data => {
     state.views = data.views || [];
     redrawWall();
   }).catch(() => {});
@@ -1946,7 +1970,10 @@ function _backoffMs() {
 function connectWS(name, pane) {
   pane = pane || 'tile';
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = proto + '//' + location.host + '/ws/' + (name || state.name);
+  // iter 25: route bicameral programs to /ws/bicameral/{name}
+  const isBi = state.bicameralPrograms && state.bicameralPrograms.includes(name);
+  const base = isBi ? '/ws/bicameral/' : '/ws/';
+  const url = proto + '//' + location.host + base + (name || state.name);
   const ws = new WebSocket(url);
   if (pane === 'tile2') {
     state.pane.ws2 = ws;
@@ -2024,6 +2051,35 @@ setInterval(_sendPing, 3000);
 // pane: 'tile' (pane 1, default) or 'tile2' (pane 2)
 function applySnapshot(snap, pane) {
   pane = pane || 'tile';
+
+  // iter 25: bicameral bridge — extract sub/con/bridge from top-level snapshot
+  if (snap.sub && snap.con) {
+    // Bicameral format: con bus is the primary (conscious decision engine)
+    snap.bus = snap.con.bus ?? {};
+    snap.series = snap.con.series ?? {};
+    // Bridge depth from top-level
+    if (snap.bridge) {
+      state.bridgeDepth = snap.bridge.depth ?? 0;
+      state.bridgeLatency = snap.bridge.latency ?? 1;
+      state.bridgeH4 = snap.bridge.use_h4 ?? false;
+      state.bridgeHistory = snap.bridge.history ?? [];
+      const bd = document.getElementById('bridge-depth');
+      const bl = document.getElementById('bridge-lat');
+      const bb = document.getElementById('bridge-badge');
+      if (bd) bd.textContent = state.bridgeDepth;
+      if (bl) bl.textContent = state.bridgeLatency;
+      if (bb) bb.style.display = 'inline';
+    }
+    // For split pane: sub bus goes to pane2
+    if (pane !== 'tile2') {
+      state.pane.tick2 = snap.t ?? 0;
+      state.pane.bus2 = snap.sub.bus ?? {};
+      state.pane.series2 = snap.sub.series ?? {};
+      state.pane.views2 = snap.views ?? [];
+      state.pane.running2 = snap.running ?? false;
+      state.pane.heatmap2 = _bus_to_heatmap_decayed_pane(state.pane.bus2, state.pane.views2, 'pane');
+    }
+  }
 
   // handle ping response (iter 4: WS RTT)
   if (snap._pong && state.pingSent) {
@@ -2419,12 +2475,19 @@ document.getElementById('replay-btn').addEventListener('click', () => {
 async function _loadPrograms() {
   const r = await fetch('/api/programs');
   const d = await r.json();
+  state.bicameralPrograms = d.bicameral || [];
   const sel = document.getElementById('pane2-select');
   sel.innerHTML = '';
-  for (const p of d.programs) {
+  for (const p of (d.programs || [])) {
     const opt = document.createElement('option');
     opt.value = p;
     opt.textContent = p;
+    sel.appendChild(opt);
+  }
+  for (const p of (d.bicameral || [])) {
+    const opt = document.createElement('option');
+    opt.value = p;
+    opt.textContent = '[bi] ' + p;
     sel.appendChild(opt);
   }
 }
@@ -2501,8 +2564,11 @@ setupZoom();
 document.getElementById('program-name').textContent = state.name;
 updateGroupBadges('tile');
 _refreshPresetSelect();
-_loadPrograms();
-refreshProgramSwitcher();
+_loadPrograms().then(async () => {
+  await refreshProgramSwitcher();
+  startLoop();
+  connectWS(state.name, 'tile');
+});
 const _accentPicker = document.getElementById('accent-picker');
 if (_accentPicker) {
   _accentPicker.value = state.accentColor || '#ff8c00';

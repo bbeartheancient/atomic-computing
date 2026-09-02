@@ -8,11 +8,13 @@ Run:
     python -m atomic.ui [--port 18094]
     uvicorn atomic.ui:app --port 18094 --host 0.0.0.0
 """
+from .bicameral_viewer import BicameralViewer
 from .server import app
 from .viewer import Viewer
-from .programs import build, all_programs
+from .programs import build, all_programs, build_bicameral, all_bicameral_programs
 
-__all__ = ["app", "Viewer", "build", "all_programs"]
+__all__ = ["app", "Viewer", "BicameralViewer", "build", "all_programs",
+           "build_bicameral", "all_bicameral_programs"]
 
 
 def run_server(host: str = "0.0.0.0", port: int = 18094):

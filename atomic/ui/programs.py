@@ -159,3 +159,50 @@ def build(name: str) -> Program | None:
 
 def all_programs() -> list[str]:
     return sorted(_REGISTRY.keys())
+
+
+# ── bicameral programs ─────────────────────────────────────────────────────────
+
+
+def _bicameral_clock() -> dict:
+    return {
+        "type": "bicameral",
+        "sub": Program(
+            "clock_source",
+            description="clock_bpm@60 — subconscious clock",
+            blocks=[Block("clk", "clock_bpm", {"bpm": 60})],
+            wires=[],
+        ),
+        "con": Program(
+            "counter_display",
+            description="accum -> smooth -> viz_series — conscious counter",
+            blocks=[
+                Block("cnt", "accum", {"per_tick": 1}),
+                Block("sm", "smooth", {"alpha": 0.1}),
+                Block("v0", "viz_series"),
+            ],
+            wires=[
+                Wire("cnt.acc", "sm.in"),
+                Wire("sm.cv", "v0.in"),
+            ],
+        ),
+        "bridge_map": [("clk.trig", "cnt.in")],
+        "bridge_latency": 1,
+        "use_h4": False,
+    }
+
+
+_BICAMERAL_REGISTRY: dict[str, callable] = {
+    "bicameral_clock": _bicameral_clock,
+}
+
+
+def build_bicameral(name: str) -> dict | None:
+    fn = _BICAMERAL_REGISTRY.get(name)
+    if fn is None:
+        return None
+    return fn()
+
+
+def all_bicameral_programs() -> list[str]:
+    return sorted(_BICAMERAL_REGISTRY.keys())

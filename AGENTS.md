@@ -13,6 +13,8 @@ UPDATE 9/2/2026:  Source repos added to local drive:
     - Open Stage Control: /home/bbear/open-stage-control_1.31.1_node
     - Pure Data: /home/bbear/pure-data
     - Pure Data JS: /home/bbear/pdjs
+    - Infinite Livestream: /home/bbear/infinite-livestream
+    
     
 UPDATE 2 9/2/2026:  Local Duty LLM needs trained LoRa to fully enable atomic computing functions
     - LoRa similar to Backlot scriptwriting LoRa but for atomic computing functions
@@ -28,7 +30,7 @@ per-tick feed hooks), and — since iter 8 — the QBF portable trace
 store (goal 6; the operator's "middle" format: working blobs, no
 50 MB cap, H(4) gates optional). "Done" = the spec stays coherent
 AND the harness stays green (185 tests, 22 sections, `ATOMIC-PC-STATE.md` tracks
-per-iteration state; iter 19 re-verified 17/17 + 185 passed + 359 fabric + hoa selftest).
+per-iteration state; iter 25 verified 24/24 + 196 passed + 359 fabric + hoa selftest + naga WGSL validation).
 Still: git remote `github.com/bbeartheancient/atomic-computing` is live on `main` (first push e9cf4f1, 43 files); vendored `fabric/` (2.0 MB, jsfx + microfx + fixture) and `hoa64/` (8.8 MB, Hadamard spatial lib) are now in-repo so a fresh clone is standalone. Third-party siblings (`Rack`, `WebPd`, `circuitjs1`, `memvid`) remain external and are not vendored.
 
 PRIME DIRECTIVE: IF A BETTER WAY WOULD WORK, SUGGEST IT!
@@ -40,19 +42,24 @@ IMPORTANT: When making edits, make the edits first. If additional questions pers
 Verify the harness (unified, vendored `fabric/` + `hoa64/`):
 - ATOMIC-PC harness (185 tests): `python -m pytest tests -q`
   (oracle MODE 1+2 spawn `node`; vendored `fabric/web/jsfx.js` + `hoa64` — no external sibling required).
-- ATOMIC-PC gauntlet (22 sections, ~141 checks, ~5s): `python -m atomic.selftest`
-- Live demos (iter 18, five end-to-end scripts under `examples/`):
+- ATOMIC-PC gauntlet (24 sections, ~190 checks, ~5s): `python -m atomic.selftest`
+- Live demos (six end-to-end scripts under `examples/`):
   - `python -m examples.qbf_persistence_round_trip` — record+archive+load+replay a trace via `.qbf` shard
   - `python -m examples.hadamard_wxyz_scope`        — h4_slide keystone + 4x4 Display + viz_series
   - `python -m examples.gated_clock_counter`        — from_description() -> compile -> engine run
   - `python -m examples.swarm_evolve_teach_demo`     — swarm -> evolve -> teach -> QBF round-trip
   - `python -m examples.heatmap_animation`          — Display.heatmap_animation from a live trace
+  - `python -m examples.bicameral_pipeline`         — iter 25: sub=clock_bpm@60 -> HostBridge(bridge_latency=1) -> con=accum->smooth->viz_series (two engines, 1-tick host-RAM)
 - ATOMIC-PC UI tile wall (iter 17, port 18094, FastAPI + HTML5 canvas):
   - boot: `uvicorn atomic.ui:app --port 18094 --host 0.0.0.0`
   - browse: `http://localhost:18094/run/hadamard_wxyz` (any of 7 demo programs)
-  - REST: `/api/programs`, `/api/control/<p>`, `/api/views/<p>`, `/api/snapshot/<p>`,
-          `/api/tap/<p>`, `/api/feed/<p>`, `/api/batch/<p>`, `/api/stream/<p>`
-  - WS: `/ws/<p>` — per-tick snapshot stream + tap/param/feed/batch client msgs
+    or `http://localhost:18094/run/bicameral_clock` (iter 25: sub/con engines via HostBridge)
+  - REST: `/api/programs` (includes `bicameral` key), `/api/control/<p>`, `/api/views/<p>`,
+          `/api/snapshot/<p>`, `/api/tap/<p>`, `/api/feed/<p>`, `/api/batch/<p>`, `/api/stream/<p>`
+  - REST (bicameral): `/api/bicameral`, `/api/bicameral/<p>/snapshot`, `/api/bicameral/<p>/batch`,
+          `/api/bicameral/<p>/bridge`
+  - WS: `/ws/<p>` — per-tick snapshot stream; `/ws/bicameral/<p>` (iter 25: bicameral pipeline,
+    sub/con/bridge snapshot with bridge depth history)
 
 Verify the vendored harness:
 - EEL2/JSFX runtime + fabric suite: `python -m pytest fabric/tests -q`

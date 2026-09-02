@@ -35,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ..gates import param_range
 from ..program import Program
+from .bicameral_viewer import BicameralViewer
 from .viewer import Viewer
 
 
@@ -46,13 +47,25 @@ _DT = 1.0 / 30.0
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    from .programs import build as _build, all_programs
+    from .programs import build as _build, all_programs, build_bicameral as _build_bi, all_bicameral_programs
     for name in all_programs():
         prog = _build(name)
         if prog:
             Viewer.put(name, Viewer(prog, name=name))
+    for name in all_bicameral_programs():
+        spec = _build_bi(name)
+        if spec:
+            bv = BicameralViewer(
+                spec["sub"], spec["con"],
+                bridge_map=spec["bridge_map"],
+                bridge_latency=spec["bridge_latency"],
+                use_h4=spec["use_h4"],
+                name=name,
+            )
+            BicameralViewer.put(name, bv)
     yield
     Viewer._registry.clear()
+    BicameralViewer._registry.clear()
 
 def create_app() -> FastAPI:
     app = FastAPI(title="atomic-pc-ui", version="0.1", lifespan=_lifespan)
@@ -67,9 +80,10 @@ def create_app() -> FastAPI:
 
     @app.get("/api/programs")
     async def programs():
-        from .programs import all_programs
+        from .programs import all_programs, all_bicameral_programs
         return {
             "programs": all_programs(),
+            "bicameral": all_bicameral_programs(),
             "active": list(Viewer._registry.keys()),
         }
 
@@ -231,6 +245,74 @@ def create_app() -> FastAPI:
             raise HTTPException(404, f"no record {run_id!r} for {name!r}")
         return frames
 
+    # ── iter 25: bicameral pipeline endpoints ─────────────────────────────
+    @app.get("/api/bicameral/{name}/snapshot")
+    async def bicameral_snapshot(name: str):
+        v = BicameralViewer.get(name) or _auto_register_bicameral(name)
+        if v is None:
+            raise HTTPException(404, f"bicameral {name!r} not found")
+        return v.snapshot()
+
+    @app.post("/api/bicameral/{name}/batch")
+    async def bicameral_batch(name: str, payload: dict):
+        v = BicameralViewer.get(name) or _auto_register_bicameral(name)
+        if v is None:
+            raise HTTPException(404, f"bicameral {name!r} not found")
+        ticks = int(payload.get("ticks", 60))
+        return v.batch(ticks)
+
+    @app.get("/api/bicameral/{name}/bridge")
+    async def bicameral_bridge(name: str):
+        v = BicameralViewer.get(name) or _auto_register_bicameral(name)
+        if v is None:
+            raise HTTPException(404, f"bicameral {name!r} not found")
+        snap = v.snapshot()
+        return snap["bridge"]
+
+    @app.get("/api/bicameral")
+    async def bicameral_list():
+        from .programs import all_bicameral_programs
+        return {"programs": all_bicameral_programs()}
+
+    @app.websocket("/ws/bicameral/{name}")
+    async def ws_bicameral(name: str, ws: WebSocket):
+        import time
+        await ws.accept()
+        v = BicameralViewer.get(name) or _auto_register_bicameral(name)
+        if v is None:
+            await ws.send_text(json.dumps({"error": f"bicameral {name!r} not found"}))
+            await ws.close()
+            return
+        q = await v.ws_connect()
+        try:
+            await ws.send_text(json.dumps(v.snapshot()))
+            stop = asyncio.Event()
+
+            async def tick_loop():
+                first = True
+                while not stop.is_set():
+                    t0 = time.perf_counter()
+                    snap = v.tick_once()
+                    eng_us = (time.perf_counter() - t0) * 1e6
+                    if first:
+                        snap["_lat_eng"] = eng_us
+                        first = False
+                    try:
+                        await ws.send_text(json.dumps(snap))
+                    except Exception:
+                        stop.set()
+                        return
+                    await asyncio.sleep(v.dt)
+
+            t1 = asyncio.create_task(tick_loop())
+            try:
+                await asyncio.wait({t1}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                stop.set()
+                t1.cancel()
+        finally:
+            v.ws_disconnect(q)
+
     return app
 
 
@@ -330,6 +412,29 @@ def _auto_register(name: str) -> Viewer | None:
         import traceback
         traceback.print_exc()
         raise HTTPException(500, f"failed to build program {name!r}: {exc}")
+
+
+def _auto_register_bicameral(name: str) -> BicameralViewer | None:
+    if name in BicameralViewer._registry:
+        return BicameralViewer._registry[name]
+    try:
+        from .programs import build_bicameral as _build_bi
+        spec = _build_bi(name)
+        if spec is None:
+            return None
+        bv = BicameralViewer(
+            spec["sub"], spec["con"],
+            bridge_map=spec["bridge_map"],
+            bridge_latency=spec["bridge_latency"],
+            use_h4=spec["use_h4"],
+            name=name,
+        )
+        BicameralViewer.put(name, bv)
+        return BicameralViewer._registry[name]
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"failed to build bicameral {name!r}: {exc}")
 
 
 app = create_app()

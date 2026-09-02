@@ -2514,11 +2514,101 @@ def s23_checks():
         assert "fn tick_c0()" in w
         assert "fn main(@builtin(global_invocation_id) gid: vec3<u32>)" in w
     checks.append(("wgsl module-scope storage struct shape", wgsl_struct_shape))
+    return checks
+
+
+def s24_checks():
+    """Goal B: bicameral live demo — iter 25.
+    BicameralPipeline: sub=clock_bpm@60, con=accum->smooth->viz_series,
+    wired through HostBridge(bridge_latency=1). Bridge depth tracks the queue;
+    final accum=2.0 (two beats in 90 ticks at 60bpm); UI bridge depth
+    badge wired via BicameraViewer.snapshot().
+    """
+    from atomic import Program, Block, Wire
+    from atomic.bridge import BicameralPipeline
+
+    checks = []
+
+    def bicameral_accum_2():
+        sub = Program("clock_source", blocks=[Block("clk", "clock_bpm", {"bpm": 60})], wires=[])
+        con = Program("counter_display",
+                      blocks=[Block("cnt", "accum", {"per_tick": 1}),
+                              Block("sm", "smooth", {"alpha": 0.1}),
+                              Block("v0", "viz_series")],
+                      wires=[Wire("cnt.acc", "sm.in"), Wire("sm.cv", "v0.in")])
+        pipe = BicameralPipeline(sub, con, bridge_map=[("clk.trig", "cnt.in")],
+                                bridge_latency=1, use_h4=False)
+        pipe.run(90)
+        assert pipe.con.bus.snapshot().get("cnt.acc") == 2.0, \
+            "accum=2.0 after 90 ticks at 60bpm"
+    checks.append(("bicameral accum=2.0 at 90 ticks", bicameral_accum_2))
+
+    def bicameral_bridge_depth():
+        sub = Program("clock_source", blocks=[Block("clk", "clock_bpm", {"bpm": 60})], wires=[])
+        con = Program("counter_display",
+                      blocks=[Block("cnt", "accum", {"per_tick": 1})], wires=[])
+        pipe = BicameralPipeline(sub, con, bridge_map=[("clk.trig", "cnt.in")],
+                                bridge_latency=1)
+        for _ in range(90):
+            pipe.tick()
+        assert pipe.bridge.depth() == 1, "bridge depth=1 (latency=1, one beat in flight)"
+        assert pipe.bridge._pushed >= 1, "bridge pushed >= 1 beats"
+    checks.append(("bridge depth=1 (latency=1)", bicameral_bridge_depth))
+
+    def bicameral_viewer_snapshot():
+        from atomic.ui.bicameral_viewer import BicameralViewer
+        from atomic.ui.programs import build_bicameral
+        spec = build_bicameral("bicameral_clock")
+        assert spec is not None, "bicameral_clock program not found"
+        assert spec["type"] == "bicameral", "should be bicameral type"
+        bv = BicameralViewer(spec["sub"], spec["con"],
+                            bridge_map=spec["bridge_map"],
+                            bridge_latency=spec["bridge_latency"],
+                            name="test")
+        snap = bv.batch(5)
+        assert "sub" in snap and "con" in snap, "snapshot needs sub/con"
+        assert "bridge" in snap, "snapshot needs bridge"
+        assert "depth" in snap["bridge"], "bridge needs depth"
+        assert "latency" in snap["bridge"], "bridge needs latency"
+        assert "history" in snap["bridge"], "bridge needs history"
+        assert snap["sub"]["bus"].get("clk.trig") == 0.0, "sub clk.trig==0 before first beat"
+    checks.append(("BicameralViewer snapshot sub/con/bridge", bicameral_viewer_snapshot))
+
+    def ui_server_bicameral_endpoints():
+        from fastapi.testclient import TestClient
+        from atomic.ui.server import create_app
+        app = create_app()
+        c = TestClient(app, raise_server_exceptions=False)
+        r = c.get("/api/bicameral")
+        assert r.status_code == 200, f"/api/bicameral: {r.status_code}"
+        data = r.json()
+        assert "programs" in data
+        assert "bicameral_clock" in data["programs"]
+        r2 = c.post("/api/bicameral/bicameral_clock/batch", json={"ticks": 10})
+        assert r2.status_code == 200, f"/api/bicameral batch: {r2.status_code}"
+        bd = r2.json()["bridge"]
+        assert bd["depth"] >= 0
+        assert bd["latency"] == 1
+        assert bd["pushed"] == 10
+    checks.append(("UI /api/bicameral endpoints", ui_server_bicameral_endpoints))
+
+    def ui_programs_includes_bicameral():
+        from fastapi.testclient import TestClient
+        from atomic.ui.server import create_app
+        app = create_app()
+        c = TestClient(app, raise_server_exceptions=False)
+        r = c.get("/api/programs")
+        assert r.status_code == 200
+        data = r.json()
+        assert "bicameral" in data, "/api/programs should include bicameral"
+        assert "bicameral_clock" in data["bicameral"], "bicameral_clock in programs.bicameral"
+    checks.append(("/api/programs includes bicameral key", ui_programs_includes_bicameral))
 
     return checks
 
+
 def main():
-    print("ATOMIC-PC selftest — 23 sections")
+    print("ATOMIC-PC selftest — 24 sections")
     print("="*60)
     results=[]
     results.append(_run_section(1, "bridge", s1_checks))
@@ -2544,6 +2634,7 @@ def main():
     results.append(_run_section(21, "iter6 UI", s21_checks))
     results.append(_run_section(22, "iter7 UI (zoom + accent)", s22_checks))
     results.append(_run_section(23, "iter24 goal A wgsl naga hard-validate", s23_checks))
+    results.append(_run_section(24, "iter25 goal B bicameral live demo", s24_checks))
     print("="*60)
     ok=sum(1 for r in results if r)
     print(f"selftest: {ok}/{len(results)} sections ok")
