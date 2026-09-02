@@ -1,0 +1,22 @@
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+.venv-fabric/
+hoa64-venv/
+# runtime artifacts (outside repo, but guard)
+.runtime/
+# local vector index cache (regenerated via zg index)
+.zvec-grep/
+# portable trace shards (stored under ~/.runtime/atomic_qbf, not in repo)
+*.qbf
+*.mv2
+# os/editor
+.DS_Store
+.vscode/
+.idea/
