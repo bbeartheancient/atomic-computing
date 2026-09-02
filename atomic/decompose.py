@@ -746,7 +746,9 @@ def decompose_eel2(source, name="eel2_decomposed"):
         raise DecomposeError("empty EEL2 source")
     try:
         import os, sys
-        sys.path.insert(0, os.path.expanduser("~/M1Multitronic"))
+        env_root = os.environ.get("ATOMIC_FABRIC_ROOT")
+        if env_root:
+            sys.path.insert(0, env_root)
         from fabric.web.jsfx_js import lex  # type: ignore
         lex(source)
     except Exception:

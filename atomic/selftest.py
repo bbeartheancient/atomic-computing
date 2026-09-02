@@ -33,9 +33,12 @@ def _fix_paths():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     tests = os.path.join(root, "tests")
     home = os.path.expanduser("~")
-    for p in (tests, root, home, os.path.join(home, "M1Multitronic")):
+    for p in (tests, root, home):
         if p not in sys.path:
             sys.path.insert(0, p)
+    env_root = os.environ.get("ATOMIC_FABRIC_ROOT")
+    if env_root and env_root not in sys.path:
+        sys.path.insert(0, env_root)
 _fix_paths()
 
 import atomic.oracle as oracle
@@ -88,24 +91,26 @@ def _run_section(num, title, fn):
 
 # ---------------------------------------------------------------- 1 bridge
 def s1_checks():
-    home = HOME
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     node = shutil.which("node")
-    jsfx = os.path.join(home, "M1Multitronic", "fabric", "web", "jsfx.js")
-    fixture = os.path.join(home, "M1Multitronic", "fabric", "tests", "microfx_modules.json")
-    conformance = os.path.join(home, "M1Multitronic", "fabric", "tests", "jsfx_conformance.js")
-    hoa = os.path.join(home, "hoa64-venv", "bin", "python")
+    env_fabric = os.environ.get("ATOMIC_FABRIC_ROOT", os.path.join(root, "fabric"))
+    env_hoa = os.environ.get("ATOMIC_HOA_ROOT", os.path.join(root, "hoa64"))
+    jsfx = os.path.join(env_fabric, "web", "jsfx.js")
+    fixture = os.path.join(env_fabric, "tests", "microfx_modules.json")
+    conformance = os.path.join(env_fabric, "tests", "jsfx_conformance.js")
+    hoa = shutil.which("python")
     def node_assets():
         assert node is not None, "node not on PATH"
         assert os.path.exists(jsfx), f"missing {jsfx}"
         assert os.path.exists(fixture), f"missing {fixture}"
     def conformance_26():
         assert os.path.exists(conformance), f"missing {conformance}"
-        out = subprocess.run([node, conformance], capture_output=True, text=True, cwd=home, timeout=60)
+        out = subprocess.run([node, conformance], capture_output=True, text=True, cwd=root, timeout=60)
         assert out.returncode==0, out.stderr[:600]
         assert "26/26" in out.stdout, out.stdout[-600:]
     def hoa_selftest():
         out = subprocess.run([hoa, "-m", "hoa64.cli", "hadamard", "--selftest"],
-                             capture_output=True, text=True, cwd=home, timeout=60)
+                             capture_output=True, text=True, cwd=root, timeout=60)
         assert out.returncode==0, out.stderr[:600]
         assert "pass" in (out.stdout+out.stderr).lower()
     checks=[("node + jsfx + fixture present", node_assets)]

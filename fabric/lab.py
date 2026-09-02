@@ -31,7 +31,7 @@ def _import_hoa64():
 
         return True
     except ModuleNotFoundError:
-        root = os.environ.get("HOA64_ROOT", "/home/bbear")
+        root = os.environ.get("HOA64_ROOT", "~")
         if os.path.isdir(os.path.join(root, "hoa64")):
             sys.path.insert(0, root)
             import hoa64  # noqa: F401

@@ -7,7 +7,7 @@ making changes.
 
 `hoa64` is a single flat Python package (this directory **is** the package —
 it uses relative imports, so it must be imported/run as `hoa64` from the
-parent directory `/home/bbear`). It serves two purposes that coexist in the
+parent directory `~`). It serves two purposes that coexist in the
 same modules:
 
 1. **HOA-7 spatial calculator** (the original project): 7th-order Ambisonics
@@ -479,7 +479,7 @@ package is not pip-installable and there is no build step. Run it in place
 from the parent directory:
 
 ```bash
-cd /home/bbear
+cd ~
 python3 -m hoa64.cli --help
 python3 -m hoa64.cli hadamard --selftest      # the test suite (see below)
 python3 -m hoa64.cli hadamard --generate 668
@@ -510,7 +510,7 @@ There is **no pytest/unittest suite and no CI**. The canonical check is the
 in-module selftest:
 
 ```bash
-cd /home/bbear && ~/miniforge3/envs/sage-dev/bin/python -m hoa64.cli hadamard --selftest
+cd ~ && ~/miniforge3/envs/sage-dev/bin/python -m hoa64.cli hadamard --selftest
 ```
 
 It verifies Sylvester/Paley/construction correctness, the CSV-imported
@@ -551,10 +551,10 @@ small `if __name__ == "__main__":` demo/self-check in the prevailing style.
   (numpy, torch+xpu, fastapi/uvicorn), serving
   `hoa64 webapp --host 192.168.1.107 --port 8770` with a ufw rule
   allowing 8770/tcp from 192.168.1.0/24. SSH deploy key:
-  `~/.ssh/hoa64_deploy` (user bbear).
+  `~/.ssh/hoa64_deploy` (per-host).
 - Daemons write into `~/open_hadamard/` (outside the repo); `evolve.py`
   auto-cascades Kronecker multiples whenever a new order is filled.
-- Git: single branch `master`, remote `github.com/bbeartheancient/hoa64`.
+- Git: single branch `master`, remote per upstream.
   Commit messages are short imperative sentences ("Add ...", "Fix ...").
   Data products are kept out of git via `.gitignore`.
 

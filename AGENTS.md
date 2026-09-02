@@ -19,7 +19,7 @@ store (goal 6; the operator's "middle" format: working blobs, no
 50 MB cap, H(4) gates optional). "Done" = the spec stays coherent
 AND the harness stays green (170 tests, 16 sections, `ATOMIC-PC-STATE.md` tracks
 per-iteration state; iter 17 re-verified 16/16 + 170 passed + 359 fabric + hoa selftest).
-Still: git remote `github.com/bbeartheancient/atomic-computing` is live on `main` (first push e9cf4f1, 43 files); vendored `fabric/` (2.0 MB, jsfx + microfx + fixture) and `hoa64/` (8.8 MB, Hadamard spatial lib) are now in-repo so a fresh clone is standalone (no `~/M1Multitronic` or `~/hoa64` required). Third-party siblings (`~/Rack`, `~/WebPd`, `~/circuitjs1`, `~/memvid`) remain external and are not vendored.
+Still: git remote `github.com/bbeartheancient/atomic-computing` is live on `main` (first push e9cf4f1, 43 files); vendored `fabric/` (2.0 MB, jsfx + microfx + fixture) and `hoa64/` (8.8 MB, Hadamard spatial lib) are now in-repo so a fresh clone is standalone. Third-party siblings (`Rack`, `WebPd`, `circuitjs1`, `memvid`) remain external and are not vendored.
 
 PRIME DIRECTIVE: IF A BETTER WAY WOULD WORK, SUGGEST IT!
 
@@ -27,19 +27,16 @@ NOTE:  Project is created one iteration at a time: start with large concepts, ma
 IMPORTANT: When making edits, make the edits first. If additional questions persist, add them in a separate edit. Do not try to figure everyething out at once.
             -- iteration budgets are capped at 128k; you must make your edits and end turn for next iteration at 128k token usage.
 
-Verify the harness (this dir; run from `$HOME` so `hoa64` imports —
-it is cwd-imported — the one `hoa64` test skips otherwise):
-- ATOMIC-PC harness (170 tests): `cd ~/ && ~/runtime/.venv/bin/python -m pytest ATOMIC-PC/tests -q`
-  (oracle MODE 1+2 spawn `node`; run from `$HOME` for the full 170).
-- ATOMIC-PC gauntlet (16 sections, ~119 checks, ~5s): `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest`
-  (run from `~/ATOMIC-PC`; selftest fixes `sys.path` for `hoa64`/`fabric`; `pytest` still needs `cd ~/` for the `hoa64` cwd-import).
+Verify the harness (unified, vendored `fabric/` + `hoa64/`):
+- ATOMIC-PC harness (170 tests): `python -m pytest tests -q`
+  (oracle MODE 1+2 spawn `node`; vendored `fabric/web/jsfx.js` + `hoa64` — no external sibling required).
+- ATOMIC-PC gauntlet (16 sections, ~119 checks, ~5s): `python -m atomic.selftest`
 
-Verify against the sibling trees (run from there):
-- EEL2/JSFX runtime + fabric suite: `~/M1Multitronic/.venv-fabric/bin/python -m pytest fabric/tests -q`
-- JSFX syntax: `node --check ~/M1Multitronic/fabric/web/jsfx.js`
-- host numpy / afi package: `~/runtime/.venv/bin/python -m pytest ~/M1Multitronic/python/tests -q`
-- spatial math (H4/HOA): `cd ~/ && ~/hoa64-venv/bin/python -m hoa64.cli hadamard --selftest`
-- .mv2 store: `cd ~/memvid && cargo test`
+Verify the vendored harness:
+- EEL2/JSFX runtime + fabric suite: `python -m pytest fabric/tests -q`
+- JSFX syntax: `node --check fabric/web/jsfx.js`
+- spatial math (H4/HOA): `python -m hoa64.cli hadamard --selftest`
+- .mv2 store (external, optional): `cargo test` in `memvid`
 
 ## Map
 One signal bus, read bottom-up.
@@ -73,7 +70,7 @@ One signal bus, read bottom-up.
    resolution derives from the full display; tiles link into larger
    sub-matrices (a tiled video wall).
 
-Roadmap (the 10 goals) is in `~/M1Multitronic/docs/BICAMERAL_FRAMEWORK.md`
+Roadmap (the 10 goals) is in `ATOMIC-PC-STATE.md` (BICAMERAL_FRAMEWORK archived in `fabric/docs/`)
 S10: learn from direct DMA streams (1) -> assemble blocks into visual
 assembly (2) -> user edits blocks to run apps (3) -> learn function paths from
 teacher examples (4) -> swappable domain vocab/n-gram sets routed by signal
@@ -84,12 +81,12 @@ self-improvement loops (7) ->
 decompose any language/compiled code into atomic functions (8) -> bicameral
 two-GPU split (9) -> cheap active params => parallel agent swarms (10).
 
-Module roles in the verified harness (`~/M1Multitronic/fabric/` — vendored here as `fabric/`):
+Module roles in the vendored harness (`fabric/`):
 `web/jsfx.js` = EEL2/JSFX runtime + host bridge; `microfx.py` = module
 catalog + ngram verbs; `atomic_program.py` = block/wire IR + compiler;
 `dma_trace.py` = flow observer; `main.py` = FastAPI (:18093).
 
-Module roles in the LOCAL harness (this dir, `~/ATOMIC-PC/atomic/`): `bus.py` = the rock-
+Module roles in the LOCAL harness (`atomic/`): `bus.py` = the rock-
 solid signal store + per-node host bridge; `engine.py` = the Python
 twin of `evaluatePatch` (the pinned per-tick loop, batch `run()` +
 live `tick()` with per-tick feeds); `gates.py` = the unified atom
@@ -121,13 +118,9 @@ The engine takes an optional `trace=` observer: pure read-only
   matrix. Change semantics THERE first, then in code.
 - Git remote `https://github.com/bbeartheancient/atomic-computing` (description
   "atomizing data processes into keyword gates") is live on `main` (first push e9cf4f1); vendored `fabric/` and `hoa64/` make a fresh clone standalone.
-- Sibling trees: vendored `fabric/` (from `~/M1Multitronic/fabric`, 2.0 MB) and `hoa64/` (from `~/hoa64`, 8.8 MB) are in-repo; third-party siblings (`~/Rack`, `~/WebPd`, `~/circuitjs1`, `~/memvid`) remain external and are not vendored.
-- Interpreters (verified present): `~/runtime/.venv/bin/python` (torch +
-  transformers + memvid_sdk), `~/M1Multitronic/.venv-fabric/bin/python`,
-  `~/hoa64-venv/bin/python`. CAUTION: the `~/miniforge3/envs/sage-dev` that
-  `hoa64/AGENTS.md` names is NOT on this box — use `~/hoa64-venv`.
-- Ports: vLLM :8000, fabric :18093, hoa64 serve :8765, hoa64 webapp :8770.
-  PLE state: `~/.runtime/ngram_shards/`. node v26 for JSFX.
+- Sibling trees: vendored `fabric/` (2.0 MB) and `hoa64/` (8.8 MB) are in-repo; third-party siblings (`Rack`, `WebPd`, `circuitjs1`, `memvid`) remain external and are not vendored.
+- Interpreters: `python` 3.11+ (`torch` + `transformers` for local harness; `node` v26 for JSFX oracle; `numpy` for `hoa64`).
+- Ports (optional local services): `fabric` :18093, `hoa64` :8765/:8770. Node v26 for JSFX.
 
 ## Decision frames
 - Import sibling trees; vendored `fabric/` and `hoa64/` are the exception for standalone (others never vendored).
@@ -148,27 +141,23 @@ The engine takes an optional `trace=` observer: pure read-only
 ## Obligations
 - Touched EEL2/JSFX or fabric: `node --check .../jsfx.js` clean AND
   `...pytest fabric/tests -q` green.
-- Touched host numpy/afi: `~/runtime/.venv/bin/python -m pytest
-  ~/M1Multitronic/python/tests -q` green.
+- Touched host numpy/afi: `python -m pytest python/tests -q` green (external `afi` repo, not vendored).
 - Touched spatial math: hoa64 `hadamard --selftest` passes.
-- Touched .mv2 persistence: `cd ~/memvid && cargo test` green AND you honored
+- Touched .mv2 persistence: `cargo test` in `memvid` green AND you honored
   the .mv2 landmines (below). Iter-8 note: goal 6's store is now the
   local pure-Python .qbf — .mv2 is untouched, so this obligation is
-  dormant unless you actually edit ~/memvid.
+  dormant unless you actually edit `memvid`.
 - Never restart production services (vllm/fabric) unless the task explicitly
   requires it.
 - Do not commit unless asked. If you ARE asked: this dir needs `git init` +
   the remote set first (it is not a repo yet); then one commit per turn.
 
 ## Evidence
-- Operational landmines + live journal: `~/M1Multitronic/AGENTS.md` (vLLM
-  wedges, EngineCore core dump, PLE length gate, echo fix). 11-pass selftest:
-  `~/M1Multitronic/FIRSTRUN.md`. Historical numbers:
-  `~/M1Multitronic/docs/AGENTS-archive-*.md`.
+- Operational landmines + live journal: `fabric/AGENTS.md` (vLLM wedges, EngineCore core dump). Historical numbers: `fabric/docs/AGENTS-archive-*.md`.
 - .mv2 traps: the 50 MB tier limit (MV001) is native — the PLE store rotates
   on it; always `enable_vec=False`; bookkeeping goes in tags, not metadata;
-  `close_all()` after ~10 create/close cycles. Spec: `~/memvid/MV2_SPEC.md`.
+  `close_all()` after ~10 create/close cycles. Spec: `memvid/MV2_SPEC.md` (external).
 - H(4) measured numbers (energy split, bandwidth tradeoff):
-  `~/M1Multitronic/docs/h4-bridge-codec.md` + `h4-layer-gating.md`.
+  `fabric/docs/h4-bridge-codec.md` + `h4-layer-gating.md`.
 - EEL2 runtime traps: `compile()` must wrap parse output in a block node;
   `Proxy.has` must return true for all globals or patches break.

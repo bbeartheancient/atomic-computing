@@ -1,6 +1,6 @@
 """Evolve tests (goal 7): self-improvement loop over params."""
 import sys, os
-sys.path.insert(0, os.path.expanduser("~/M1Multitronic"))
+# sys.path sibling no longer needed (fabric/ is vendored)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from atomic import Program, Block, Wire

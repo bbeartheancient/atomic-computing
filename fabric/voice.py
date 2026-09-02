@@ -24,7 +24,7 @@ def _port_up(port: int, host: str = "127.0.0.1") -> bool:
 def pipecat_status() -> dict:
     """Voice-leg status. Installed/running flags; no fake pipeline."""
     # A bare ~/pipecat checkout resolves as a NAMESPACE package
-    # (loader=None) once any sys.path entry exposes /home/bbear — that
+    # (loader=None) once any sys.path entry exposes ~ — that
     # is NOT an install. Only a real module loader counts.
     spec = importlib.util.find_spec("pipecat")
     installed = spec is not None and getattr(spec, "loader", None) is not None

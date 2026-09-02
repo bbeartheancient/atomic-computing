@@ -418,7 +418,7 @@ def test_scriptwiz_converts_hoa64_module(tmp_path):
 
     from fabric import scriptwiz
 
-    src_path = Path("/home/bbear/hoa64/brillouin.py")
+    src_path = Path("./hoa64 (vendored)/brillouin.py")
     if not src_path.is_file():
         pytest.skip("hoa64 sibling missing")
     r = scriptwiz.convert(src_path)

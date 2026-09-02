@@ -30,7 +30,7 @@ LOGIC:
         xi_n(1-xi_n) = rho_n(1-rho_n) and every term vanishes => bound = 0 exactly,
         confirming consistency with RH."
 
-    - the Hadamard library in /home/bbear/open_hadamard have all passed rh.py
+    - the Hadamard library `hoa64` (vendored) has passed `rh.py` validation
 
     - so for any data passing through the H4 gate, the same critical line should apply        
     
@@ -116,12 +116,12 @@ RETRIEVAL (iter 16, zvec-grep):
       100% coverage). Install: `npm install -g @zvec/zvec-grep --prefix ~/.local`
       + `zg --version`. MCP: `zg install --target opencode --yes` writes stdio
       server to `~/.config/opencode/opencode.json` + guidance to `AGENTS.md`
-      (zvec_grep_search / zvec_grep_rg). Index: `zg index ~/ATOMIC-PC
-      --embedding local/potion-code-16m-v2` -> `.zvec-grep/index.zvec`
-      (cached model under `~/.zvec-grep/models`; background refresh to 42/42).
+      (zvec_grep_search / zvec_grep_rg). Index: `zg index .`
+      `--embedding local/potion-code-16m-v2` -> `.zvec-grep/index.zvec`
+      (cached model under `~/.cache/zvec`; background refresh to 42/42).
       Query CLI: `zg query "H4 gate row layout" --human` hybrid FTS+vector
       + `zg query --rg -n "h4_gate"` managed ripgrep; Agent MCP same via
-      `zvec_grep_search` / `_rg` (root=/home/bbear/ATOMIC-PC). Wrapper
+      `zvec_grep_search` / `_rg` (root = repo root). Wrapper
       `atomic/context.py` (`query`/`query_rg`/`is_available`/`zg_version`/
       `assert_retrieval`/`CANONICAL_QUERIES`) keeps harness stdlib-only and
       stays green when zg absent (skip with clear message). Fidelity pinned:
@@ -144,10 +144,10 @@ REFERENCES:
         
     EEL2 - buffer link for standard and multidimensional data streams:
         - https://www.cockos.com/EEL2/ - EEL2 reference 
-        - /home/bbear/M1Multitronic/fabric - contains bicameral functions and application
+        - `fabric/` (vendored) — bicameral functions and application
     
     hoa64 - dimensional calculator library
-        - /home/bbear/hoa64 - Python library for different spatial functions/applications
+        - `hoa64/` (vendored) — Python library for spatial Hadamard/HOA
         
     TouchOSC - Used as framework for quickly generating app control surfaces
         - https://github.com/wcolding/pyTOSC - Python TouchOSC templates
@@ -156,8 +156,7 @@ REFERENCES:
             - https://openstagecontrol.ammd.net/download/ - OSC download
     
     Memvid - converts information into .mv2 files
-        - /home/bbear/memvid - source code
-        - currently limited to 50MB, limit needs to be higher or use .mv2 as index for binary blob
+        - `memvid` (external) — source code (50 MB tier limit noted; superseded by QBF)
         
     XMX/Xe/ESIMD Kernel Development - For programming GPU functions
         - https://www.intel.com/content/www/us/en/docs/oneapi/optimization-guide-gpu/2025-2/overview.html - oneAPI optimization guide
@@ -171,7 +170,7 @@ REFERENCES:
         - https://www.blender.org/lab/mcp-server/ - Official MCP server
         
     Previous Research:
-        - /home/bbear/M1Multitronic/docs - contains different experimental methods of achieving atomic computing
+        - `fabric/docs/` — experimental methods of achieving atomic computing
         
 
     

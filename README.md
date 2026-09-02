@@ -26,22 +26,19 @@ atomic/selftest.py  gauntlet (16 sections, ~120 checks, ~5s)
 
 ## Verify
 
-Run from `$HOME` so `hoa64` imports (it is cwd-imported — the one `hoa64` test skips otherwise):
+Run from repo root (vendored `fabric/` + `hoa64/` — no external sibling required):
 
-- ATOMIC-PC harness (170 tests): `cd ~/ && ~/runtime/.venv/bin/python -m pytest ATOMIC-PC/tests -q`
-  (oracle MODE 1+2 spawn `node`; run from `$HOME` for the full 170)
-- ATOMIC-PC gauntlet (16 sections, ~120 checks, ~5s): `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest`
-  (selftest fixes `sys.path` for `hoa64`/`fabric`)
-- Retrieval (zvec-grep): `zg --version` (0.2.1, `~/.local/bin/zg`), `zg status ~/ATOMIC-PC` (ready, local/potion-code-16m-v2, 40/40),
-  `zg query "H4 gate row layout" --human` hybrid FTS+vector; MCP via `zg install --target opencode --yes` + `zvec_grep_search` (Agent context `~/ATOMIC-PC/AGENTS.md`)
+- ATOMIC-PC harness (170 tests): `python -m pytest tests -q`
+  (oracle MODE 1+2 spawn `node`)
+- ATOMIC-PC gauntlet (16 sections, ~120 checks, ~5s): `python -m atomic.selftest`
+- Retrieval (zvec-grep): `zg --version` (0.2.1), `zg status .` (ready, local/potion-code-16m-v2, 42/42),
+  `zg query "H4 gate row layout" --human` hybrid FTS+vector; MCP via `zg install --target opencode --yes` + `zvec_grep_search`
 
-Verify against sibling trees (run from there):
-
-- EEL2/JSFX runtime + fabric suite: `~/M1Multitronic/.venv-fabric/bin/python -m pytest fabric/tests -q`
-- JSFX syntax: `node --check ~/M1Multitronic/fabric/web/jsfx.js`
-- host numpy / afi package: `~/runtime/.venv/bin/python -m pytest ~/M1Multitronic/python/tests -q`
-- spatial math (H4/HOA): `cd ~/ && ~/hoa64-venv/bin/python -m hoa64.cli hadamard --selftest`
-- .mv2 store: `cd ~/memvid && cargo test` (dormant since iter 8 — QBF is the portable store)
+Verify the vendored harness:
+- EEL2/JSFX runtime + fabric suite: `python -m pytest fabric/tests -q`
+- JSFX syntax: `node --check fabric/web/jsfx.js`
+- spatial math (H4/HOA): `python -m hoa64.cli hadamard --selftest`
+- .mv2 store (external, optional): `cargo test` in `memvid`
 
 ## Key contracts
 
@@ -53,10 +50,9 @@ Verify against sibling trees (run from there):
 - **Tiles**: 3×3 or 4×4 wall, `Display.heatmap_from_trace()` / `heatmap_from_swarm()` / `heatmap_animation()` render replay onto tiles normalized 0..1.
 - **Retrieval**: `zg` 0.2.1 + `local/potion-code-16m-v2` index (`.zvec-grep/index.zvec`, 40 files / 500 entities) via `atomic/context.py` (`query`/`query_rg`/`assert_retrieval`) — stays green when zg absent, MCP `zvec_grep_search`/`_rg` same store.
 
-## Sibling imports (never vendored)
+## Sibling imports
 
-`~/M1Multitronic`, `~/hoa64`, `~/memvid`, `~/Rack`, `~/WebPd`, `~/circuitjs1`.
-Interpreters: `~/runtime/.venv/bin/python`, `~/M1Multitronic/.venv-fabric/bin/python`, `~/hoa64-venv/bin/python`; node v26.
+Vendored: `fabric/` (2.0 MB, jsfx + microfx) and `hoa64/` (8.8 MB, Hadamard) are in-repo. Third-party siblings (`Rack`, `WebPd`, `circuitjs1`, `memvid`) remain external. Interpreters: `python` 3.11+; `node` v26.
 
 ## Iteration 15 — scale, viz, audit, release
 

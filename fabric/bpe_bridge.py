@@ -23,7 +23,7 @@ harness into the shim's verbatim forward:
     (pending-answer queue), closing the read path.
 
 State lives in NeoHarness (imported, not vendored: NEOH_ROOT env,
-default /home/bbear/NeoHarness).  Fail-soft everywhere: if NeoHarness is
+default ~/NeoHarness).  Fail-soft everywhere: if NeoHarness is
 unavailable the bridge disables itself and the shim behaves exactly as
 before.  Gate: FABRIC_OPENCODE_BPE=1 (drop-in 65-opencode-bpe.conf).
 """
@@ -75,7 +75,7 @@ def _load_nh():
     global _nh
     if _nh is not None:
         return _nh or None
-    root = os.environ.get("NEOH_ROOT", "/home/bbear/NeoHarness")
+    root = os.environ.get("NEOH_ROOT", "~/NeoHarness")
     try:
         if root not in sys.path:
             sys.path.insert(0, root)

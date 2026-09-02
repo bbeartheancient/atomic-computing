@@ -1,6 +1,6 @@
 """Iter 13 polish: Sub/Div wire-SUM, teach QBF, evolver swarm, wgsl extended."""
 import os, sys, tempfile, shutil
-sys.path.insert(0, os.path.expanduser("~/M1Multitronic"))
+# sys.path sibling no longer needed (fabric/ is vendored)
 from atomic import Engine, Program, Block, Wire, decompose_python, decompose_eel2, Evolver
 from atomic.teach import TeacherRegistry, REGISTRY, save_registry, load_registry
 from atomic.qbfstore import open_trace_store, close_all

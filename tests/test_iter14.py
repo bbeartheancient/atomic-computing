@@ -1,6 +1,6 @@
 """Iter14 tests: full AST sweep, swarm->evolve->teach->QBF, bridge benchmarks, tiles heatmap."""
 import os, sys, tempfile
-sys.path.insert(0, os.path.expanduser("~/M1Multitronic"))
+# sys.path sibling no longer needed (fabric/ is vendored)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from atomic import (decompose_python, DecomposeError, Engine, Program, Block, Wire,

@@ -71,7 +71,7 @@ def _base() -> str:
 
 
 def _repo() -> Path:
-    return Path(os.environ.get("FABRIC_PI_CWD", "/home/bbear/M1Multitronic")).resolve()
+    return Path(os.environ.get("FABRIC_PI_CWD", "./fabric (vendored source)")).resolve()
 
 
 def _duty_model() -> str:

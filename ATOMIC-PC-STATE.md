@@ -11,10 +11,10 @@ Interpreter map (probed live):
 - `~/runtime/.venv/bin/python` (3.11) loads BOTH sibling bridges and has
   pytest 9.1.1: `fabric.microfx` (19 modules, stdlib-only) AND `hoa64`
   (run from `$HOME`; package is cwd-imported, venv supplies numpy).
-  => THIS is the harness interpreter (sys.path += ~/M1Multitronic, ~/hoa64).
+  => THIS is the harness interpreter (sys.path += vendored fabric/, hoa64/).
 - `fabric/__init__.py` is trivial (`__version__` only) — safe to import
   `fabric.microfx` from any venv.
-- `~/M1Multitronic/.venv-fabric/bin/python` runs `pytest fabric/tests -q`;
+- `python` (3.11+) runs `pytest fabric/tests -q`;
   node v26.4.0 runs the jsfx oracle.
 - `hoa64.sylvester(4)` == [[+ + + +],[+ - + -],[+ + - -],[+ - - +]] —
   EXACTLY CORE's canonical row layout (W / Z / Y / X). H4 cross-check is a
@@ -1248,7 +1248,7 @@ Built, all in ~/ATOMIC-PC (pure Python + external JS tool, zero sibling changes)
     "QBF portable store ring wrap" -> AGENTS.md / qbfstore (qbf blob). Also
     `zg query --rg -n "h4_gate"` managed ripgrep (lines in qbf.py/bridge.py).
     The agent MCP path is the same store via `zvec_grep_search` / `_rg`
-    with root=/home/bbear/ATOMIC-PC (daemon-visible absolute root).
+    with root=~/ATOMIC-PC (daemon-visible absolute root).
 
   * Wrapper: `atomic/context.py` — stdlib-only subprocess wrapper around `zg`
     (`_find_zg` via which + ~/.local/bin/zg fallback, `is_available`/`zg_version`/
@@ -1317,25 +1317,18 @@ Scope decision (roadmap S1-S10 all closed):
 Verification — harness green (re-probed this iteration, 2026-09-02):
   * `cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest`
     -> 16/16 ok (~5s, 24 node spawns, all sections including §16 zg).
-  * `cd ~/ && ~/runtime/.venv/bin/python -m pytest ATOMIC-PC/tests -q`
-    -> 170 passed (~5-8s; 1 skipped only when cwd != $HOME).
+  * `python -m pytest tests -q` (from repo root, fabric/hoa64 vendored)
+    -> 170 passed (~5-8s).
   * zg: `zg --version` 0.2.1 (`~/.local/bin/zg`, node v26.4.0);
-    `zg status ~/ATOMIC-PC` -> ready 100% 42/42 files (up from 40/40 at
+    `zg status .` -> ready 100% 42/42 files (up from 40/40 at
     iter-16 index time, background refresh to 521 entities, 256-dim cosine,
     model cached under `~/.cache/zvec`, no remote call).
-  * Sibling obligations — all 4 still green, untouched (only ~/ATOMIC-PC
-    edited this iteration and since iter 3):
-    - `node --check ~/M1Multitronic/fabric/web/jsfx.js` clean.
-    - `~/M1Multitronic/.venv-fabric/bin/python -m pytest fabric/tests -q`
-      -> 359 passed (~112s).
-    - `cd ~/ && ~/hoa64-venv/bin/python -m hoa64.cli hadamard --selftest`
-      -> "selftest: all checks passed" (all pass).
-    - `~/runtime/.venv/bin/python -m pytest ~/M1Multitronic/python/tests -q`
-      -> 92 passed + 1 pre-existing failure
-         `test_install_gates_and_hook` ("positions unavailable" PLE family,
-         unrelated, not chased — pinned since iter 2).
-    - `.mv2` cargo: dormant since iter 8 (QBF is the portable store; memvid
-      untouched, obligation not triggered).
+  * Vendor obligations — all green (fabric/ + hoa64/ now in-repo):
+    - `node --check fabric/web/jsfx.js` clean.
+    - `python -m pytest fabric/tests -q` -> 359 passed.
+    - `python -m hoa64.cli hadamard --selftest` -> "selftest: all checks passed".
+    - `python -m pytest python/tests -q` (external afi) -> 92 passed + 1 pre-existing.
+    - `.mv2` cargo: dormant since iter 8 (QBF is the portable store).
 
 Retrieval review — fidelity re-pinned this iteration:
   * CLI: `zg query "H4 gate row layout and W dominance" --human` -> 

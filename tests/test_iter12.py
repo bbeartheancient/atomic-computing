@@ -1,6 +1,6 @@
 """Iter 12 hardening: decompose Add wire-SUM, EEL2 multi-input, Evolver QBF history, H4 bridge."""
 import os, sys, tempfile, shutil
-sys.path.insert(0, os.path.expanduser("~/M1Multitronic"))
+# sys.path sibling no longer needed (fabric/ is vendored)
 from atomic import Engine, Program, Block, Wire, decompose_python, decompose_eel2, Evolver
 from atomic.bridge import HostBridge
 from atomic.qbfstore import open_trace_store, close_all

@@ -1,6 +1,6 @@
 """Swarm tests (goal 10): parallel agents, tile exclusivity, determinism."""
 import sys, os
-sys.path.insert(0, os.path.expanduser("~/M1Multitronic"))
+# sys.path sibling no longer needed (fabric/ is vendored)
 sys.path.insert(0, os.path.expanduser("~/hoa64"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 

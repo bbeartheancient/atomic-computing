@@ -4,7 +4,7 @@ Runs in-process against `fastapi.testclient.TestClient(create_app())`;
 no server needed.  Mirrors the `hadamard.selftest` reporting style
 (expect/raise, PASS lines, single summary line).
 
-    cd /home/bbear && python -m hoa64.webapp.selftest
+    cd ~ && python -m hoa64.webapp.selftest
 
 Note: the selftest uses paley(108) rather than 92 — 92 is not a Paley
 order (`paley(92)` returns None).  GCP builds powers of two, so the GCP

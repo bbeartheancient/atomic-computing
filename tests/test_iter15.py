@@ -1,6 +1,6 @@
 """Iter15: edge-case audit, 16-agent swarm, 10k trace/QBF, WGSL naga + heatmap animation."""
 import os, sys, tempfile, math, shutil
-sys.path.insert(0, os.path.expanduser("~/M1Multitronic"))
+# sys.path sibling no longer needed (fabric/ is vendored)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from atomic import (decompose_python, decompose_eel2, DecomposeError, Engine, Program, Block, Wire,

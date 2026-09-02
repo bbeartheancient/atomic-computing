@@ -1,6 +1,6 @@
-"""CAS hook: SageMath from ~/hoa64-venv if present, else SymPy.
+"""CAS hook: SageMath from ./hoa64 (vendored)-venv if present, else SymPy.
 
-Operator path is `/home/bbear/hoa64-venv` (not ~/hoa64 and not the
+Operator path is `./hoa64 (vendored)-venv` (not ./hoa64 (vendored) and not the
 documented sage-dev conda env). That venv is currently CPython 3.14 +
 numpy — `import sage.all` misses. Until sage is installed there (or
 SAGE_BIN is set), evaluate with sympy in .venv-fabric.
@@ -15,8 +15,8 @@ import subprocess
 _SAGE_CANDIDATES = [
     os.environ.get("SAGE_BIN"),
     os.environ.get("SAGE_PYTHON"),
-    os.path.expanduser("~/hoa64-venv/bin/sage"),
-    os.path.expanduser("~/hoa64-venv/bin/python"),
+    os.path.expanduser("./hoa64 (vendored)-venv/bin/sage"),
+    os.path.expanduser("./hoa64 (vendored)-venv/bin/python"),
     os.path.expanduser("~/miniforge3/envs/sage-dev/bin/sage"),
     os.path.expanduser("~/miniforge3/envs/sage-dev/bin/python"),
     shutil.which("sage"),

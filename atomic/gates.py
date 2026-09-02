@@ -42,10 +42,11 @@ def _vendor_roots():
     # standalone: ATOMIC-PC/fabric vendored (preferred)
     if os.path.exists(os.path.join(here, "fabric", "microfx.py")):
         roots.append(here)
-    # fallback sibling
-    sib = os.path.expanduser("~/M1Multitronic")
-    if sib not in roots:
-        roots.append(sib)
+    # env override for dev: ATOMIC_FABRIC_ROOT=/path/to/fabric
+    env_root = os.environ.get("ATOMIC_FABRIC_ROOT")
+    if env_root and os.path.exists(os.path.join(env_root, "fabric", "microfx.py")):
+        if env_root not in roots:
+            roots.append(env_root)
     return roots
 
 def _fabric_modules():
@@ -60,8 +61,10 @@ def _fabric_modules():
                 return mf2.MODULES
             except ImportError:
                 continue
-        # last resort: original sibling
-        sys.path.insert(0, os.path.expanduser(os.path.join("~", "M1Multitronic")))
+        # last resort: env override or vendored
+        env_root = os.environ.get("ATOMIC_FABRIC_ROOT")
+        if env_root:
+            sys.path.insert(0, env_root)
         import fabric.microfx as mf
         return mf.MODULES
     return mf.MODULES
@@ -84,7 +87,9 @@ def _fabric_gate_tables():
                 return mf2._GATES, mf2._QGATES
             except ImportError:
                 continue
-        sys.path.insert(0, os.path.expanduser(os.path.join("~", "M1Multitronic")))
+        env_root = os.environ.get("ATOMIC_FABRIC_ROOT")
+        if env_root:
+            sys.path.insert(0, env_root)
         import fabric.microfx as mf
         return mf._GATES, mf._QGATES
     return mf._GATES, mf._QGATES
@@ -374,10 +379,12 @@ _reg("hadamard4", init=_h4_init, tick=_h4_tick)
 
 def _fixture():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env_root = os.environ.get("ATOMIC_FABRIC_ROOT")
     cands = [
         os.path.join(here, "fabric", "tests", "microfx_modules.json"),
-        os.path.expanduser(os.path.join("~", "M1Multitronic", "fabric", "tests", "microfx_modules.json")),
     ]
+    if env_root:
+        cands.append(os.path.join(env_root, "fabric", "tests", "microfx_modules.json"))
     for p in cands:
         try:
             with open(p) as f:

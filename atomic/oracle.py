@@ -46,12 +46,12 @@ import subprocess
 import tempfile
 
 def _fabric_root():
-    # standalone: prefer vendored ATOMIC-PC/fabric, fallback to sibling
+    # standalone: prefer vendored ATOMIC-PC/fabric, fallback to ATOMIC_FABRIC_ROOT env
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for cand in (os.path.join(here, "fabric"), os.path.expanduser("~/M1Multitronic/fabric")):
-        if os.path.exists(os.path.join(cand, "web", "jsfx.js")):
+    for cand in (os.path.join(here, "fabric"), os.environ.get("ATOMIC_FABRIC_ROOT", "")):
+        if cand and os.path.exists(os.path.join(cand, "web", "jsfx.js")):
             return cand
-    return os.path.expanduser("~/M1Multitronic/fabric")
+    return os.path.join(here, "fabric")  # vendored default
 
 _FABRIC = _fabric_root()
 JSFX = os.path.join(_FABRIC, "web", "jsfx.js")
