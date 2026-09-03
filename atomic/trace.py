@@ -33,15 +33,42 @@ unboundedly. replay() reconstructs the stimulus from the recorded
 ticks (per-tick taps -> a fresh ui_taps set; per-tick param
 overrides -> feeds) and drives a FRESH engine with it: by
 determinism (contract 8) the replayed outputs are identical.
+
+Iter 33 (Aspect 4): the trace also stores a third ring of
+VideoFrameEntry records (H3 RGBA frames + provenance). This is the
+portable capture path: the .qbf shard round-trips the frames so
+a future H3 session can replay the same H4-decoded colors.
 """
 
 import json
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 
-__all__ = ["FrameEntry", "FlowTrace", "replay", "replay_events"]
+__all__ = [
+    "FrameEntry", "VideoFrameEntry", "FlowTrace",
+    "replay", "replay_events",
+    "latency_histogram_from_trace",
+]
+
 
 MAX_FRAMES = 10_000
+
+
+@dataclass
+class VideoFrameEntry:
+    """A single decoded H3 RGBA frame with provenance metadata."""
+    seq: int
+    t: int
+    rgba: bytes
+    prompt: str = ""
+    seed: int = 0
+    h3_latency_ms: float = 0.0
+    width: int = 0
+    height: int = 0
+    w_gate: float = 0.0
+    x_gate: float = 0.0
+    y_gate: float = 0.0
+    z_gate: float = 0.0
 
 
 @dataclass
@@ -59,12 +86,15 @@ class FrameEntry:
 class FlowTrace:
     """Two circular rings: one per-tick stimulus entry, one per-node
     FrameEntry. Both wrap at max_frames; seq counts every entry ever
-    recorded."""
+    recorded. Iter 33: a third optional ring holds VideoFrameEntry
+    records (H3 RGBA frames + provenance)."""
 
     def __init__(self, max_frames=MAX_FRAMES, active=True):
         self.max_frames = int(max_frames)
         self._ticks = deque(maxlen=self.max_frames)
         self._frames = deque(maxlen=self.max_frames)
+        self._video = deque(maxlen=self.max_frames)
+        self._vseq = 0
         self._seq = 0
         self._active = bool(active)
 
@@ -83,7 +113,9 @@ class FlowTrace:
     def clear(self):
         self._ticks.clear()
         self._frames.clear()
+        self._video.clear()
         self._seq = 0
+        self._vseq = 0
 
     # -- recording (called from inside the engine's pinned loop) -------------
 
@@ -120,6 +152,44 @@ class FlowTrace:
         self._frames.append(entry)
         return entry
 
+    def record_video_frame(self, rgba, t, prompt="", seed=0,
+                            h3_latency_ms=0.0, width=0, height=0,
+                            w_gate=0.0, x_gate=0.0, y_gate=0.0,
+                            z_gate=0.0):
+        """Record one decoded H3 RGBA frame with provenance metadata.
+
+        Stored in a separate ring (deque, maxlen=max_frames). seq is
+        monotonic per trace. The rgba bytes are stored verbatim so the
+        H4-decoded colors can be reproduced bit-exact during replay.
+        """
+        if not self._active:
+            return None
+        self._vseq += 1
+        entry = VideoFrameEntry(
+            seq=self._vseq,
+            t=int(t),
+            rgba=bytes(rgba) if rgba is not None else b"",
+            prompt=str(prompt),
+            seed=int(seed),
+            h3_latency_ms=float(h3_latency_ms),
+            width=int(width),
+            height=int(height),
+            w_gate=float(w_gate),
+            x_gate=float(x_gate),
+            y_gate=float(y_gate),
+            z_gate=float(z_gate),
+        )
+        self._video.append(entry)
+        return entry
+
+    @property
+    def video(self):
+        return list(self._video)
+
+    @property
+    def video_seq(self):
+        return self._vseq
+
     # -- export ----------------------------------------------------------------
 
     @classmethod
@@ -132,17 +202,26 @@ class FlowTrace:
         tr._frames = deque((FrameEntry(**f) for f in (snap.get("frames") or [])),
                            maxlen=tr.max_frames)
         tr._seq = int(snap.get("seq") or len(tr._frames))
+        # video frames (iter 33)
+        video = snap.get("video") or []
+        tr._video = deque(
+            (VideoFrameEntry(**_filter_vf_keys(f)) for f in video),
+            maxlen=tr.max_frames)
+        tr._vseq = int(snap.get("vseq") or len(tr._video))
         return tr
 
     def snapshot(self):
         return {
             "active": self._active,
             "seq": self._seq,
+            "vseq": self._vseq,
             "n_frames": len(self._frames),
             "n_ticks": len(self._ticks),
+            "n_video": len(self._video),
             "max_frames": self.max_frames,
             "ticks": list(self._ticks),
             "frames": [asdict(f) for f in self._frames],
+            "video": [asdict(f) for f in self._video],
         }
 
     def export(self, path=None):
@@ -234,3 +313,13 @@ def latency_histogram_from_trace(trace):
         buckets[ms] = buckets.get(ms, 0) + 1
         raw.append(us)
     return dict(sorted(buckets.items())), raw
+
+
+def _filter_vf_keys(d):
+    """Filter a dict to only the fields VideoFrameEntry accepts."""
+    if isinstance(d, dict):
+        return {k: v for k, v in d.items()
+                if k in {"seq", "t", "rgba", "prompt", "seed",
+                         "h3_latency_ms", "width", "height",
+                         "w_gate", "x_gate", "y_gate", "z_gate"}}
+    return d

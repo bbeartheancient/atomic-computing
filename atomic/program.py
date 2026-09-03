@@ -62,6 +62,7 @@ _VIZ_OUTPUTS = {
     "viz_xy": "y",
     "viz_wxyz3d": "z",
     "viz_video": "ready",
+    "viz_video_h3": "ready",
 }
 
 
@@ -78,7 +79,7 @@ def _patch_views(blocks):
                 entry["key"] = (b.id + ".z").lower()
             elif b.primitive == "viz_xy":
                 entry["key"] = (b.id + ".y").lower()
-            elif b.primitive == "viz_video":
+            elif b.primitive in ("viz_video", "viz_video_h3"):
                 entry["key"] = (b.id + ".frame").lower()
             else:
                 entry["key"] = (b.id + "." + output).lower()

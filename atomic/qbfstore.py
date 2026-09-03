@@ -77,8 +77,11 @@ class QbfTraceStore:
         rid = max(runs) + 1 if runs else 0
         manifest = {
             "run_id": rid, "note": note, "dt": dt,
-            "seq": snap["seq"], "n_ticks": snap["n_ticks"],
-            "n_frames": snap["n_frames"], "max_frames": snap["max_frames"],
+            "seq": snap["seq"], "vseq": snap.get("vseq", 0),
+            "n_ticks": snap["n_ticks"],
+            "n_frames": snap["n_frames"],
+            "n_video": snap.get("n_video", 0),
+            "max_frames": snap["max_frames"],
             "tick_ts": [tick["t"] for tick in snap["ticks"]],
             "program": program,
         }
@@ -87,6 +90,16 @@ class QbfTraceStore:
         f.put_json("r%04d/ticks" % rid, snap["ticks"])
         for i, fr in enumerate(snap["frames"]):
             f.put_json("r%04d/f%06d" % (rid, i), fr)
+        # iter 33 Aspect 4: store video frames as separate blobs
+        n_vid = snap.get("n_video", 0)
+        for i, vf in enumerate(snap.get("video") or []):
+            # Store rgba as base64 so JSON can round-trip
+            import base64
+            vf_stored = dict(vf)
+            if "rgba" in vf_stored and isinstance(vf_stored["rgba"], bytes):
+                vf_stored["rgba_b64"] = base64.b64encode(
+                    vf_stored.pop("rgba")).decode("ascii")
+            f.put_json("r%04d/v%06d" % (rid, i), vf_stored)
         f.write()
         return manifest
 
@@ -98,8 +111,8 @@ class QbfTraceStore:
     # -- read back ---------------------------------------------------------------
 
     def load_run(self, rid):
-        """Reassemble run rid: {'manifest', 'ticks', 'frames'} -- exactly
-        the snapshot() dict shape (frames as plain dicts, not
+        """Reassemble run rid: {'manifest', 'ticks', 'frames', 'video'} --
+        exactly the snapshot() dict shape (frames as plain dicts, not
         FrameEntry)."""
         f = self.file
         m = f.get_json("r%04d/manifest" % rid)
@@ -108,18 +121,34 @@ class QbfTraceStore:
             raise QbfError("run %d tick count mismatch" % rid)
         frames = [f.get_json("r%04d/f%06d" % (rid, i))
                    for i in range(m["n_frames"])]
-        return {"manifest": m, "ticks": ticks, "frames": frames}
+        # iter 33 Aspect 4: load video frames
+        import base64
+        video = []
+        for i in range(m.get("n_video", 0)):
+            vf = f.get_json("r%04d/v%06d" % (rid, i))
+            if vf and "rgba_b64" in vf:
+                vf = dict(vf)
+                vf["rgba"] = base64.b64decode(vf.pop("rgba_b64"))
+            video.append(vf)
+        return {"manifest": m, "ticks": ticks, "frames": frames, "video": video}
 
     def flow_trace(self, rid):
         """A live FlowTrace rebuilt from run rid (replay-ready)."""
         d = self.load_run(rid)
         m = d["manifest"]
-        return FlowTrace.from_snapshot({
-            "active": True, "seq": m["seq"],
-            "n_ticks": m["n_ticks"], "n_frames": m["n_frames"],
+        snap = {
+            "active": True,
+            "seq": m["seq"],
+            "vseq": m.get("vseq", 0),
+            "n_ticks": m["n_ticks"],
+            "n_frames": m["n_frames"],
+            "n_video": m.get("n_video", 0),
             "max_frames": m["max_frames"],
-            "ticks": d["ticks"], "frames": d["frames"],
-        })
+            "ticks": d["ticks"],
+            "frames": d["frames"],
+            "video": d["video"],
+        }
+        return FlowTrace.from_snapshot(snap)
 
     def export_run(self, rid, path=None):
         """The dma_trace-style JSON of a stored run -- byte-identical

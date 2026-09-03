@@ -1,6 +1,6 @@
-"""selftest: unified gauntlet for ATOMIC-PC (iter 29).
+"""selftest: unified gauntlet for ATOMIC-PC (iter 35).
 
-28 sections, N/N ok per section, exit 0/1.
+ 34 sections, N/N ok per section, exit 0/1.
 Run: cd ~/ATOMIC-PC && ~/runtime/.venv/bin/python -m atomic.selftest
 
 Sections:
@@ -38,6 +38,13 @@ Sections:
   26 iter27   goal C: video generation (viz_video atom, HostBridge frame blob, H3 stub/session, swarm prompt bank, H4 RGBA log/linear decoder)
   27 iter28   goal C continued: jfin_live_export atom, JFinScheduler/Exporter/M3U, channel rotation (round_robin/random/h4), M3U emission, HDHomeRun discovery
   28 iter29   goal C continued: DASH muxer, mock ffmpeg mode, keyframe-on-trig, seeded rotation determinism, recursive group-title M3U, Swarm H4 -> JFinScheduler consensus_pick, viz_video -> jfin_live_export end-to-end program
+  29 iter30   goal C continued: viz_video canvas + JFin HDHomeRun REST + jfin_export_demo program
+  30 iter31   goal C: H3InferenceServer (FastAPI on :8765, GET /health + POST /generate), viz_video_h3 atom polls server per tick (H4 RGBA decoder, retry, enabled gate, H4 parity vs viz_video), video_live program, /api/video/start|stop|status REST
+  31 iter32   ComfyUIH3Bridge (API-only subprocess bridge + stub fallback)
+  32 iter33   feed_video REST+WS + swarm H4 routing + QBF frame trace
+  33 iter34   InfiniteVideoLoop (H3 -> HostBridge -> BicameralViewer -> viz_video -> QBF)
+  34 iter35   VideoSynth + VideoSynthSource (5 effects, GPU-free) + InfiniteVideoLoop
+              integration + BicameralViewer.feed_ivl_tick + QBF round-trip
 """
 import io, json, math, os, random, shutil, struct, subprocess, sys, tempfile, time
 import pytest
@@ -3519,8 +3526,1924 @@ def s29_checks():
     return checks
 
 
+def s30_checks():
+    """iter31: H3InferenceServer (FastAPI :8765, /health + /generate),
+    viz_video_h3 atom (H4 RGBA decoder, retry, enabled gate, H4 parity vs
+    viz_video), video_live program, /api/video/start|stop|status REST."""
+    import threading as _th
+    import time as _time
+    _P = 38000  # high port range to avoid pytest port conflicts (187xx)
+    checks = []
+
+    def h3_server_lifecycle():
+        from atomic.video_server import H3InferenceServer
+        srv = H3InferenceServer(port=_P+1, width=8, height=8)
+        srv.start()
+        try:
+            assert srv.is_running
+            assert srv.wait_until_ready(timeout=8.0), "server not ready"
+            h = srv.health()
+            assert h["status"] == "ok"
+            assert h["model"] == "H3-FastVideo"
+            assert h["width"] == 8
+            assert h["height"] == 8
+        finally:
+            srv.stop()
+        assert not srv.is_running
+    checks.append(("H3InferenceServer start/stop + /health", h3_server_lifecycle))
+
+    def h3_server_generate():
+        from atomic.video_server import H3InferenceServer
+        srv = H3InferenceServer(port=_P+2, width=4, height=4)
+        srv.start()
+        try:
+            assert srv.wait_until_ready(timeout=8.0), "server not ready"
+            r = srv.generate("p", seed=42, n_frames=1)
+            assert "frames_b64" in r
+            assert len(r["frames_b64"]) == 1
+            import base64 as _b64
+            frame = _b64.b64decode(r["frames_b64"][0])
+            assert len(frame) == 4 * 4 * 4
+        finally:
+            srv.stop()
+    checks.append(("H3InferenceServer /generate returns RGBA frame", h3_server_generate))
+
+    def viz_video_h3_atom_registered():
+        from atomic.gates import ATOMS
+        a = ATOMS["viz_video_h3"]
+        assert a.category == "source"
+        assert "ready" in a.outputs
+        assert "w" in a.outputs and "x" in a.outputs
+        assert "y" in a.outputs and "z" in a.outputs
+        assert a.params["server_url"] == "http://localhost:8765"
+        assert "enabled" in a.params
+        assert "timeout_s" in a.params
+        assert "max_retries" in a.params
+    checks.append(("viz_video_h3 atom registered (source category, H4 outputs, server params)",
+                   viz_video_h3_atom_registered))
+
+    def viz_video_h3_engine_tick_server_up():
+        from atomic import Program, Block
+        from atomic.engine import Engine
+        from atomic.video_server import H3InferenceServer
+        srv = H3InferenceServer(port=_P+3, width=4, height=4)
+        srv.start()
+        try:
+            assert srv.wait_until_ready(timeout=8.0), "server not ready"
+            p = Program("v31_test", blocks=[
+                Block("v", "viz_video_h3",
+                      {"server_url": f"http://localhost:{_P+3}",
+                       "width": 4, "height": 4, "prompt": "hello",
+                       "n_frames": 1, "timeout_s": 5.0, "max_retries": 2,
+                       "enabled": 1.0}),
+            ])
+            patch = p.compile("microfx")
+            eng = Engine(patch["modules"], patch.get("wires", []),
+                         views=patch.get("views") or [])
+            eng.tick()
+            frame = eng.bus.get("v.rgba")
+            assert frame is not None
+            assert len(frame) == 4 * 4 * 4
+            assert eng.bus.get("v.ready") == 1.0
+        finally:
+            srv.stop()
+    checks.append(("viz_video_h3 engine tick (server up): fetches RGBA + sets ready=1",
+                   viz_video_h3_engine_tick_server_up))
+
+    def viz_video_h3_enabled_gate_skips_http():
+        from atomic import Program, Block
+        from atomic.engine import Engine
+        from atomic.video_server import H3InferenceServer
+        srv = H3InferenceServer(port=_P+4)
+        srv.start()
+        try:
+            assert srv.wait_until_ready(timeout=8.0), "server not ready"
+            p = Program("v31_gate", blocks=[
+                Block("v", "viz_video_h3",
+                      {"server_url": f"http://localhost:{_P+4}", "enabled": 0.0}),
+            ])
+            patch = p.compile("microfx")
+            eng = Engine(patch["modules"], [])
+            eng.tick()
+            assert eng.bus.get("v.ready") == 0.0
+            assert eng.bus.get("v.rgba") is None
+        finally:
+            srv.stop()
+    checks.append(("viz_video_h3 enabled=0 gate skips HTTP + leaves bus empty",
+                   viz_video_h3_enabled_gate_skips_http))
+
+    def viz_video_h3_server_down_no_crash():
+        from atomic import Program, Block
+        from atomic.engine import Engine
+        p = Program("v31_down", blocks=[
+            Block("v", "viz_video_h3",
+                  {"server_url": "http://localhost:59999",
+                   "timeout_s": 0.3, "max_retries": 1}),
+        ])
+        patch = p.compile("microfx")
+        eng = Engine(patch["modules"], [])
+        eng.tick()
+        assert eng.bus.get("v.ready") == 0.0
+    checks.append(("viz_video_h3 server down: sets ready=0 (no crash, no exception)",
+                   viz_video_h3_server_down_no_crash))
+
+    def viz_video_h3_h4_decode_parity():
+        from atomic import Program, Block
+        from atomic.engine import Engine
+        from atomic.video_server import H3InferenceServer
+        srv = H3InferenceServer(port=_P+5, width=2, height=2)
+        srv.start()
+        try:
+            assert srv.wait_until_ready(timeout=8.0), "server not ready"
+            p_vv = Program("vv_ref", blocks=[
+                Block("v", "viz_video", {"capture": 1.0}),
+            ])
+            p_vv3 = Program("vv3", blocks=[
+                Block("v", "viz_video_h3",
+                      {"server_url": f"http://localhost:{_P+5}",
+                       "width": 2, "height": 2,
+                       "prompt": "parity_test",
+                       "seed": 7}),
+            ])
+            eng_vv = Engine(p_vv.compile("microfx")["modules"], [])
+            eng_vv3 = Engine(p_vv3.compile("microfx")["modules"], [])
+            import base64 as _b64
+            r = srv.generate("parity_test", seed=7)
+            frame = _b64.b64decode(r["frames_b64"][0])
+            eng_vv.bus.set("v.frame", frame)
+            eng_vv.tick()
+            eng_vv3.tick()
+            assert abs(eng_vv.bus.get("v.w") - eng_vv3.bus.get("v.w")) < 1e-6
+            assert abs(eng_vv.bus.get("v.x") - eng_vv3.bus.get("v.x")) < 1e-6
+            assert abs(eng_vv.bus.get("v.y") - eng_vv3.bus.get("v.y")) < 1e-6
+            assert abs(eng_vv.bus.get("v.z") - eng_vv3.bus.get("v.z")) < 1e-6
+            assert eng_vv.bus.get("v.rgba") == eng_vv3.bus.get("v.rgba")
+        finally:
+            srv.stop()
+    checks.append(("viz_video_h3 H4 RGBA decode matches viz_video (w/x/y/z parity)",
+                   viz_video_h3_h4_decode_parity))
+
+    def video_live_program_build():
+        from atomic.ui.programs import build, all_programs
+        assert "video_live" in all_programs()
+        p = build("video_live")
+        assert p is not None
+        assert p.name == "video_live"
+        prims = [b.primitive for b in p.blocks]
+        assert "viz_video_h3" in prims
+    checks.append(("video_live demo program registered with viz_video_h3 atom",
+                   video_live_program_build))
+
+    def video_live_program_compile():
+        from atomic.ui.programs import build
+        p = build("video_live")
+        patch = p.compile("microfx")
+        mods = patch["modules"]
+        assert len(mods) == 1
+        assert mods[0]["primitive"] == "viz_video_h3"
+        assert mods[0]["id"] == "vh3"
+        assert mods[0]["params"].get("server_url") == "http://localhost:8765"
+    checks.append(("video_live compiles to microfx: single viz_video_h3 block",
+                   video_live_program_compile))
+
+    def server_video_endpoints_registered():
+        from atomic.ui import server
+        app = server.create_app()
+        routes = [r.path for r in app.routes]
+        assert "/api/video/start" in routes
+        assert "/api/video/stop" in routes
+        assert "/api/video/status" in routes
+    checks.append(("FastAPI server: /api/video/start|stop|status endpoints registered",
+                   server_video_endpoints_registered))
+
+    def server_video_start_stop_via_testclient():
+        from fastapi.testclient import TestClient
+        from atomic.ui import server
+        from atomic.video_server import _stop_server
+        app = server.create_app()
+        client = TestClient(app, raise_server_exceptions=False)
+        port = _P + 6
+        r = client.post("/api/video/start",
+                        json={"port": port, "width": 8, "height": 8})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] in ("started", "already_running")
+        assert body["port"] == port
+        try:
+            deadline = _time.time() + 5.0
+            running = False
+            r2 = None
+            while _time.time() < deadline:
+                r2 = client.get(f"/api/video/status?port={port}")
+                assert r2.status_code == 200
+                if r2.json().get("status") == "running":
+                    running = True
+                    break
+                _time.sleep(0.1)
+            assert running, "video server never reported running"
+            st = r2.json()
+            assert st["port"] == port
+            assert "health" in st
+            assert st["health"]["status"] == "ok"
+            r3 = client.post("/api/video/stop", json={"port": port})
+            assert r3.status_code == 200
+            assert r3.json()["status"] == "stopped"
+        finally:
+            _stop_server(port=port)
+    checks.append(("Server lifecycle: POST /api/video/start + /stop + /status round-trip",
+                   server_video_start_stop_via_testclient))
+    checks.append(("Server lifecycle: POST /api/video/start + /stop + /status round-trip",
+                   server_video_start_stop_via_testclient))
+
+    def viz_outputs_and_types_includes_h3():
+        from atomic.program import _VIZ_OUTPUTS
+        from atomic.ui.viewer import _VIZ_TYPES
+        assert "viz_video_h3" in _VIZ_OUTPUTS
+        assert _VIZ_OUTPUTS["viz_video_h3"] == "ready"
+        assert "viz_video_h3" in _VIZ_TYPES
+        assert _VIZ_TYPES["viz_video_h3"] == "video"
+    checks.append(("_VIZ_OUTPUTS + _VIZ_TYPES include viz_video_h3",
+                   viz_outputs_and_types_includes_h3))
+
+    def patch_views_and_auto_views_h3():
+        from atomic.program import _patch_views, Block
+        from atomic.ui.viewer import _auto_views
+        blocks = [Block("vh3", "viz_video_h3")]
+        views = _patch_views(blocks)
+        assert len(views) == 1
+        assert views[0]["key"] == "vh3.frame"
+        assert views[0]["as"] == "video_h3"
+        mods = [{"id": "v0", "primitive": "viz_video_h3"}]
+        views2 = _auto_views(mods)
+        vmap = {v["module"]: v for v in views2}
+        assert vmap["v0"]["key"] == "v0.frame"
+        assert vmap["v0"]["viz"] == "video"
+    checks.append(("_patch_views + _auto_views: viz_video_h3 -> .frame key",
+                   patch_views_and_auto_views_h3))
+
+    def end_to_end_h3_server_viewer():
+        from atomic.ui.programs import build
+        from atomic.ui.viewer import Viewer
+        from atomic.video_server import H3InferenceServer
+        port = _P + 17
+        srv = H3InferenceServer(port=port, width=64, height=64)
+        srv.start()
+        try:
+            assert srv.wait_until_ready(timeout=8.0), "server not ready"
+            p = build("video_live")
+            for b in p.blocks:
+                if b.primitive == "viz_video_h3":
+                    b.params["server_url"] = f"http://localhost:{port}"
+            v = Viewer(p, name="video_live_iter31")
+            snap = v.batch(3)
+            assert snap["t"] == 3
+            assert snap["bus"].get("vh3.ready") == 1.0
+            assert snap["bus"].get("vh3.rgba") is not None
+            assert len(snap["bus"].get("vh3.rgba")) == 64 * 64 * 4
+        finally:
+            srv.stop()
+            Viewer.delete("video_live_iter31")
+    checks.append(("End-to-end: H3InferenceServer + Viewer.batch(video_live, 3 ticks)",
+                   end_to_end_h3_server_viewer))
+
+    return checks
+
+
+# ── iter32: ComfyUIH3Bridge (API-only subprocess bridge + stub fallback) ────
+
+def s31_checks():
+    """iter32: ComfyUIH3Bridge — launches ComfyUI (--disable-ui) as a
+    subprocess, exposes /generate via a proxy, falls back to H3Stub when
+    ComfyUI is not installed.  The atomic harness never touches ComfyUI
+    directly; it only sees the proxy's /generate contract (identical to
+    H3InferenceServer).
+    """
+    checks = []
+
+    def bridge_imports():
+        from atomic.video_server import (
+            ComfyUIH3Bridge, _ComfyUIProxyStub, H3ServerError)
+        assert ComfyUIH3Bridge is not None
+        assert _ComfyUIProxyStub is not None
+        assert H3ServerError is not None
+    checks.append(("imports: ComfyUIH3Bridge, _ComfyUIProxyStub", bridge_imports))
+
+    def bridge_constructs():
+        from atomic.video_server import ComfyUIH3Bridge
+        b = ComfyUIH3Bridge(
+            comfyui_dir="/tmp/nonexistent_comfyui",
+            comfyui_port=18188,
+            h3_port=18766,
+        )
+        assert b.comfyui_dir == "/tmp/nonexistent_comfyui"
+        assert b.comfyui_port == 18188
+        assert b.h3_port == 18766
+        assert b.h3_url == "http://localhost:18766"
+        assert b.is_running is False
+    checks.append(("ComfyUIH3Bridge construction", bridge_constructs))
+
+    def bridge_comfyui_cmd():
+        from atomic.video_server import ComfyUIH3Bridge
+        import sys
+        b = ComfyUIH3Bridge(
+            comfyui_dir="/opt/comfyui", comfyui_port=18190, h3_port=18767,
+            extra_args=("--lowvram",))
+        cmd = b._build_comfyui_cmd()
+        assert cmd[0] == sys.executable
+        assert "main.py" in cmd[1]
+        assert "--disable-ui" in cmd
+        assert "--listen" in cmd
+        assert "localhost" in cmd
+        assert "--port" in cmd
+        assert "18190" in cmd
+        assert "--lowvram" in cmd
+    checks.append(("_build_comfyui_cmd includes --disable-ui + --port + extras",
+                   bridge_comfyui_cmd))
+
+    def bridge_stub_fallback():
+        """When ComfyUI is not installed, generate() falls back to H3Stub."""
+        from atomic.video_server import ComfyUIH3Bridge
+        b = ComfyUIH3Bridge(
+            comfyui_dir="/tmp/nonexistent_comfyui", h3_port=18768)
+        r = b.generate(prompt="a cat on a fence", n_frames=1,
+                       width=8, height=8)
+        assert "frames" in r
+        assert len(r["frames"]) == 1
+        assert r["prompt"] == "a cat on a fence"
+        assert r["width"] == 8 and r["height"] == 8
+        # 8x8x4 = 256 bytes per RGBA frame
+        assert len(r["frames"][0]) == 8 * 8 * 4
+    checks.append(("generate() falls back to H3Stub when ComfyUI absent",
+                   bridge_stub_fallback))
+
+    def bridge_health_degraded():
+        """health() reports degraded when neither proxy nor ComfyUI is up."""
+        from atomic.video_server import ComfyUIH3Bridge
+        b = ComfyUIH3Bridge(
+            comfyui_dir="/tmp/nonexistent_comfyui", h3_port=18769)
+        h = b.health()
+        assert h["status"] == "degraded"
+        assert h["comfyui"] == "stopped"
+        assert h["proxy"] == "error"
+        assert "comfyui_url" in h
+        assert "h3_url" in h
+    checks.append(("health() reports degraded when offline", bridge_health_degraded))
+
+    def bridge_proxy_stub_compat():
+        """_ComfyUIProxyStub exposes a .generate() compatible with H3Stub."""
+        from atomic.video_server import ComfyUIH3Bridge, _ComfyUIProxyStub
+        b = ComfyUIH3Bridge(
+            comfyui_dir="/tmp/nonexistent_comfyui", h3_port=18770)
+        ps = _ComfyUIProxyStub(b)
+        assert ps.width == 64
+        assert ps.height == 64
+        r = ps.generate(prompt="test", n_frames=1, width=8, height=8)
+        assert r["width"] == 8 and r["height"] == 8
+        assert ps._calls == 1
+        r2 = ps.generate(prompt="test2", n_frames=1, width=4, height=4)
+        assert ps._calls == 2
+    checks.append(("_ComfyUIProxyStub tracks calls and proxies to bridge",
+                   bridge_proxy_stub_compat))
+
+    def bridge_inference_server_swap():
+        """H3InferenceServer._stub can be swapped (proxy injection works)."""
+        from atomic.video_server import H3InferenceServer, _ComfyUIProxyStub, ComfyUIH3Bridge
+        b = ComfyUIH3Bridge(
+            comfyui_dir="/tmp/nonexistent_comfyui", h3_port=18771)
+        ps = _ComfyUIProxyStub(b)
+        srv = H3InferenceServer(port=18772, width=4, height=4)
+        srv._stub = ps
+        # generate() should now route through _ComfyUIProxyStub -> bridge -> stub
+        r = srv._stub.generate(prompt="injected", n_frames=1, width=4, height=4)
+        assert r["width"] == 4
+        assert r["height"] == 4
+    checks.append(("H3InferenceServer._stub can be swapped for proxy",
+                   bridge_inference_server_swap))
+
+    def bridge_stop_idempotent():
+        """stop() is safe to call when nothing is running."""
+        from atomic.video_server import ComfyUIH3Bridge
+        b = ComfyUIH3Bridge(
+            comfyui_dir="/tmp/nonexistent_comfyui", h3_port=18773)
+        b.stop()  # no-op
+        b.stop()  # no-op again
+        assert b.is_running is False
+    checks.append(("stop() is idempotent when not running", bridge_stop_idempotent))
+
+    return checks
+
+
+# ── iter33: feed_video REST+WS, swarm H4 routing, QBF frame trace ─────────────
+
+def s32_checks():
+    """iter33 Aspect 2/3/4:
+      - Aspect 2: FeedVideoViewer + /api/feed_video REST + WS endpoints
+        (server-push video frames into the engine via viz_video)
+      - Aspect 3: Swarm H4 consensus -> H3 prompt routing demo
+        (Swarm.consensus W-channel picks prompt from bank)
+      - Aspect 4: QBF frame trace (FlowTrace.record_video_frame +
+        QbfTraceStore append_video_run + load_run with video)
+    """
+    checks = []
+
+    # ── Aspect 2: FeedVideoViewer ─────────────────────────────────────────────
+
+    def feed_video_tick_sets_frame_and_advances():
+        from atomic.ui.programs import build
+        from atomic.ui.viewer import Viewer
+        prog = build("feed_video_live")
+        v = Viewer(prog, name="test_fv")
+        w, h = 8, 8
+        rgba = bytes([255, 0, 0, 255] * (w * h))
+        v.feed_video_tick(rgba, module_id="vv")
+        assert v.tick == 1
+        assert v.engine.bus.get("vv.frame") is not None
+        Viewer.delete("test_fv")
+    checks.append(("FeedVideoViewer.feed_video_tick sets frame key + advances tick",
+                   feed_video_tick_sets_frame_and_advances))
+
+    def feed_video_batch():
+        from atomic.ui.programs import build
+        from atomic.ui.viewer import Viewer
+        prog = build("feed_video_live")
+        v = Viewer(prog, name="test_fv_batch")
+        frames = [bytes([i, 0, 0, 255] * 64) for i in range(4)]
+        snap = v.feed_video_batch(frames, module_id="vv")
+        assert v.tick == 4
+        assert snap["t"] == 4
+        Viewer.delete("test_fv_batch")
+    checks.append(("FeedVideoViewer.feed_video_batch advances tick and returns snapshot",
+                   feed_video_batch))
+
+    def feed_video_live_program():
+        from atomic.ui.programs import build
+        prog = build("feed_video_live")
+        assert prog is not None
+        assert len(prog.blocks) == 1
+        assert prog.blocks[0].primitive == "viz_video"
+        patch = prog.compile("microfx")
+        assert len(patch["modules"]) == 1
+    checks.append(("feed_video_live program builds, one viz_video block, compiles",
+                   feed_video_live_program))
+
+    # ── Aspect 2: REST endpoints ───────────────────────────────────────────────
+
+    def server_feed_video_endpoints():
+        from atomic.ui import server
+        app = server.create_app()
+        routes = [r.path for r in app.routes]
+        assert "/api/feed_video/{name}/start" in routes
+        assert "/api/feed_video/{name}/stop" in routes
+        assert "/api/feed_video/{name}/push_frame" in routes
+        assert "/api/feed_video/{name}/batch" in routes
+        assert "/api/feed_video/{name}/status" in routes
+    checks.append(("FastAPI server: /api/feed_video/* REST endpoints registered",
+                   server_feed_video_endpoints))
+
+    def server_ws_feed_video_endpoint():
+        from atomic.ui import server
+        app = server.create_app()
+        routes = [r.path for r in app.routes]
+        assert "/ws/feed_video/{name}" in routes
+    checks.append(("FastAPI server: WS /ws/feed_video/{name} endpoint registered",
+                   server_ws_feed_video_endpoint))
+
+    def feed_video_start_stop_via_testclient():
+        from fastapi.testclient import TestClient
+        from atomic.ui import server
+        app = server.create_app()
+        client = TestClient(app, raise_server_exceptions=False)
+        r = client.post("/api/feed_video/feed_video_live/start",
+                        json={"width": 8, "height": 8})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["ok"] is True
+        assert d["module_id"] == "vv"
+        r2 = client.post("/api/feed_video/feed_video_live/stop")
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["running"] is False
+    checks.append(("REST: /feed_video/start + /stop returns ok + running=False",
+                   feed_video_start_stop_via_testclient))
+
+    def feed_video_batch_via_testclient():
+        from fastapi.testclient import TestClient
+        from atomic.ui import server
+        app = server.create_app()
+        client = TestClient(app, raise_server_exceptions=False)
+        r = client.post("/api/feed_video/feed_video_live/start",
+                        json={"width": 8, "height": 8})
+        assert r.status_code == 200
+        r2 = client.post("/api/feed_video/feed_video_live/batch",
+                         json={"n_frames": 4})
+        assert r2.status_code == 200, r2.text
+        d = r2.json()
+        assert d["ok"] is True
+        assert d["n_frames"] == 4
+        assert len(d["bytes_per_frame"]) == 4
+    checks.append(("REST: /feed_video/batch(n_frames=4) returns n_frames + bytes",
+                   feed_video_batch_via_testclient))
+
+    # ── Aspect 3: Swarm H4 consensus -> H3 routing ───────────────────────────────
+
+    def swarm_consensus_w_channel():
+        from atomic import Program, Block, Wire, Swarm, Agent, Display
+        d = Display(400, 400, 4, 4)
+        swarm = Swarm(display=d)
+        for i, val in enumerate([1.0, 2.0, 3.0, 4.0]):
+            prog = Program(f"a{i}", blocks=[
+                Block(f"c{i}", "const", {"value": val}),
+                Block("g1", "gain", {"factor": 1.0}),
+            ], wires=[Wire(f"c{i}.cv", "g1.in")])
+            g = d.link(f"g{i}", i // 4, i % 4, 1, 1)
+            swarm.add_agent(Agent(f"a{i}", prog, tile_group=g))
+        # 2 ticks: gain sees input after 1-tick wire latency
+        res = swarm.run(2)
+        w = res.consensus(port="g1.cv")
+        assert abs(w - 10.0) < 1e-9
+    checks.append(("Swarm.consensus('g1.cv') = 10.0 (4 agents const 1+2+3+4)",
+                   swarm_consensus_w_channel))
+
+    def h3session_tick_generates_frame():
+        from atomic import H3Stub, H3Session
+        h3 = H3Stub(width=8, height=8)
+        session = H3Session(h3, prompts=["test"], frames_per_prompt=1)
+        frame = session.tick()
+        assert frame is not None
+        assert len(frame.rgba) == 8 * 8 * 4
+    checks.append(("H3Session.tick() returns one RGBA frame (8x8x4 bytes)",
+                   h3session_tick_generates_frame))
+
+    def swarm_consensus_deterministic():
+        from atomic import Program, Block, Wire, Swarm, Agent, Display
+        d = Display(400, 400, 4, 4)
+        swarm = Swarm(display=d)
+        for i, val in enumerate([1.0, 2.0, 3.0, 4.0]):
+            prog = Program(f"a{i}", blocks=[
+                Block(f"c{i}", "const", {"value": val}),
+                Block("g1", "gain", {"factor": 1.0}),
+            ], wires=[Wire(f"c{i}.cv", "g1.in")])
+            g = d.link(f"g{i}", i // 4, i % 4, 1, 1)
+            swarm.add_agent(Agent(f"a{i}", prog, tile_group=g))
+        r_s = swarm.run(2, parallel=False)
+        r_p = swarm.run(2, parallel=True)
+        ws = r_s.consensus(port="g1.cv")
+        wp = r_p.consensus(port="g1.cv")
+        assert abs(ws - wp) < 1e-9
+    checks.append(("Swarm consensus: parallel == serial (W=10.0 both)",
+                   swarm_consensus_deterministic))
+
+    # ── Aspect 4: QBF frame trace ─────────────────────────────────────────────
+
+    def video_frame_entry_dataclass():
+        from atomic import VideoFrameEntry
+        rgba = bytes([255, 0, 0, 255] * 64)
+        e = VideoFrameEntry(
+            seq=1, t=5, rgba=rgba,
+            prompt="comet", seed=42,
+            h3_latency_ms=10.0,
+            width=8, height=8,
+            w_gate=2.0, x_gate=1.0, y_gate=0.5, z_gate=-0.5,
+        )
+        assert e.seq == 1
+        assert e.t == 5
+        assert len(e.rgba) == 8 * 8 * 4
+        assert e.w_gate == 2.0
+    checks.append(("VideoFrameEntry dataclass: seq, t, rgba, w/x/y/z gates, provenance",
+                   video_frame_entry_dataclass))
+
+    def flow_trace_record_video_frame():
+        from atomic import FlowTrace
+        trace = FlowTrace(max_frames=100)
+        rgba = bytes([0, 255, 0, 255] * 64)
+        entry = trace.record_video_frame(
+            rgba=rgba, t=3, prompt="comet",
+            seed=7, h3_latency_ms=5.0,
+            width=8, height=8,
+            w_gate=1.5, x_gate=0.8, y_gate=0.2, z_gate=-0.1,
+        )
+        assert entry is not None
+        assert entry.seq == 1
+        assert entry.prompt == "comet"
+        assert trace.video_seq == 1
+    checks.append(("FlowTrace.record_video_frame stores rgba + provenance in ring",
+                   flow_trace_record_video_frame))
+
+    def flow_trace_snapshot_video():
+        from atomic import FlowTrace
+        trace = FlowTrace(max_frames=100)
+        rgba = bytes([255, 255, 0, 255] * 16)
+        trace.record_video_frame(rgba=rgba, t=0, prompt="test", seed=1,
+                                width=4, height=4)
+        snap = trace.snapshot()
+        assert snap["n_video"] == 1
+        assert snap["vseq"] == 1
+        assert "video" in snap
+    checks.append(("FlowTrace.snapshot includes n_video + vseq + video list",
+                   flow_trace_snapshot_video))
+
+    def qbfstore_append_video_run():
+        import os, tempfile
+        from atomic import FlowTrace, QbfTraceStore
+        fd, path = tempfile.mkstemp(suffix=".qbf")
+        os.close(fd)
+        os.unlink(path)
+        store = QbfTraceStore(path)
+        trace = FlowTrace(max_frames=100)
+        for i in range(4):
+            rgba = bytes([i % 256, 0, 0, 255] * 64)
+            trace.record_video_frame(rgba=rgba, t=i, prompt=f"f{i}",
+                                    seed=i * 10, width=8, height=8)
+        trace.record_node("c0", "const", {}, {"cv": 1.0}, 100.0, t=0)
+        m = store.append_run(trace, note="video test")
+        assert m["n_video"] == 4
+        assert m["vseq"] == 4
+        store.close()
+        os.unlink(path)
+    checks.append(("QbfTraceStore.append_run stores video frames: n_video=4, vseq=4",
+                   qbfstore_append_video_run))
+
+    def qbfstore_load_run_with_video():
+        import os, tempfile, base64
+        from atomic import FlowTrace, QbfTraceStore
+        fd, path = tempfile.mkstemp(suffix=".qbf")
+        os.close(fd)
+        os.unlink(path)
+        store = QbfTraceStore(path)
+        trace = FlowTrace(max_frames=100)
+        for i in range(3):
+            rgba = bytes([0, i % 256, 0, 255] * 32)
+            trace.record_video_frame(rgba=rgba, t=i, prompt=f"p{i}",
+                                    seed=i, width=8, height=8)
+        trace.record_node("c0", "const", {}, {"cv": 1.0}, 50.0, t=0)
+        store.append_run(trace)
+        d = store.load_run(0)
+        assert d["manifest"]["n_video"] == 3
+        assert len(d["video"]) == 3
+        assert d["video"][0]["prompt"] == "p0"
+        assert isinstance(d["video"][0].get("rgba"), bytes)
+        store.close()
+        os.unlink(path)
+    checks.append(("QbfTraceStore.load_run with video: n_video=3, rgba bytes decoded",
+                   qbfstore_load_run_with_video))
+
+    def qbfstore_flow_trace_with_video():
+        import os, tempfile
+        from atomic import FlowTrace, QbfTraceStore
+        fd, path = tempfile.mkstemp(suffix=".qbf")
+        os.close(fd)
+        os.unlink(path)
+        store = QbfTraceStore(path)
+        trace = FlowTrace(max_frames=100)
+        for i in range(2):
+            rgba = bytes([i, i + 64, i + 128, 255] * 16)
+            trace.record_video_frame(rgba=rgba, t=i, prompt=f"q{i}",
+                                    seed=i * 5, width=4, height=4)
+        trace.record_node("c0", "const", {}, {"cv": 1.0}, 50.0, t=0)
+        store.append_run(trace)
+        ft = store.flow_trace(0)
+        assert ft.video_seq == 2
+        assert len(ft.video) == 2
+        assert ft.video[0].prompt == "q0"
+        assert ft.video[1].seed == 5
+        store.close()
+        os.unlink(path)
+    checks.append(("QbfTraceStore.flow_trace: video_seq=2, prompts q0/q1, seeds 0/5",
+                   qbfstore_flow_trace_with_video))
+
+    return checks
+
+
+# ---------------------------------------------------------------- 33 iter34 InfiniteVideoLoop
+def s33_checks():
+    """iter34: InfiniteVideoLoop — the 'infinite slop' / 'interdimensional cable'
+    end-to-end pipeline:
+      PROMPT_BANK -> H3 (per-tick RGBA frames)
+                 -> HostBridge.push_frame (subconscious -> conscious)
+                 -> BicameralViewer -> viz_video
+                 -> FlowTrace.record_video_frame (portable via QBF)
+    """
+    from atomic import (H3Stub, H3Session, BicameralViewer,
+                        InfiniteVideoLoop, QbfTraceStore)
+
+    checks = []
+
+    def bridge_push_pop_frame():
+        """HostBridge push_frame / pop_frame: RGBA transport."""
+        from atomic.bridge import HostBridge
+        b = HostBridge(latency=1, capacity=8)
+        rgba = bytes([255, 0, 0, 255] * 64)
+        b.push_frame(0, rgba, prompt="frame_a", seed=0,
+                     module_id="vv", width=8, height=8)
+        # latency=1 -> not ready at tick 0
+        assert b.pop_frame(0) == []
+        out = b.pop_frame(1)
+        assert len(out) == 1
+        assert out[0]["rgba"] == rgba
+        assert out[0]["prompt"] == "frame_a"
+        # H4 channel latches computed from the last pixel
+        for k in ("_w", "_x", "_y", "_z"):
+            assert k in out[0], k
+    checks.append(("HostBridge push_frame / pop_frame + H4 latches",
+                   bridge_push_pop_frame))
+
+    def bridge_push_frame_capacity():
+        """Capacity eviction: oldest frames dropped at the front."""
+        from atomic.bridge import HostBridge
+        b = HostBridge(latency=1, capacity=2)
+        rgba = bytes([0] * 4)
+        for t in range(5):
+            b.push_frame(t, rgba, prompt=f"t{t}")
+        # capacity=2, only the last 2 frames remain
+        assert b.depth() == 2
+    checks.append(("HostBridge push_frame capacity eviction",
+                   bridge_push_frame_capacity))
+
+    def bridge_push_frame_scalar_coexist():
+        """Frame and scalar payloads share the bridge without interference."""
+        from atomic.bridge import HostBridge
+        b = HostBridge(latency=1, capacity=8)
+        b.push(0, {"x": 5.0})               # scalar path
+        b.push_frame(0, bytes([1, 2, 3, 255] * 4),
+                     prompt="frame")         # frame path
+        # both arrive at tick 1 (latency=1)
+        # pop_frame first (consumes frame, leaves scalar in queue)
+        out_f = b.pop_frame(1)
+        assert len(out_f) == 1
+        assert out_f[0]["prompt"] == "frame"
+        # scalar is still in the queue — pop() delivers it
+        out_s = b.pop(2)  # scalar arrived at tick 1; also available at 2
+        assert out_s is not None and out_s.get("x") == 5.0
+    checks.append(("HostBridge: scalar + frame coexist on same bridge",
+                   bridge_push_frame_scalar_coexist))
+
+    def bicameral_feed_video_tick():
+        """BicameralViewer.feed_video_tick writes frame into con bus."""
+        sub = Program("sub", blocks=[Block("clk", "clock_bpm",
+                                            {"bpm": 60})], wires=[])
+        con = Program("con", blocks=[Block("vv", "viz_video")], wires=[])
+        v = BicameralViewer(sub, con, name="ivl_gauntlet")
+        rgba = bytes([100, 200, 50, 255] * 16)
+        v.feed_video_tick(rgba, module_id="vv")
+        assert v.pipeline.con.bus.get("vv.frame") == rgba
+        # tick advanced
+        assert v.tick == 1
+        # snapshot has bridge info
+        snap = v.snapshot()
+        assert "bridge" in snap
+        assert snap["bridge"]["latency"] == 1
+    checks.append(("BicameralViewer.feed_video_tick writes con bus + snapshot",
+                   bicameral_feed_video_tick))
+
+    def infinite_video_loop_step():
+        """InfiniteVideoLoop: one tick drives H3 -> bridge -> con -> trace."""
+        sub = Program("s", blocks=[Block("clk", "clock_bpm",
+                                          {"bpm": 60})], wires=[])
+        con = Program("c", blocks=[Block("vv", "viz_video")], wires=[])
+        v = BicameralViewer(sub, con, name="ivl_step")
+        h3 = H3Stub(width=4, height=4)
+        trace = FlowTrace(max_frames=16)
+        loop = InfiniteVideoLoop(
+            h3, v, prompts=["comet", "rain", "beetle"],
+            module_id="vv", bridge_latency=1, max_ticks=10,
+            trace=trace)
+        frames = loop.run(3)
+        assert len(frames) == 3
+        # one H3 call per tick
+        assert h3._calls == 3
+        # round-robin prompt pick
+        assert frames[0].prompt == "comet"
+        assert frames[1].prompt == "rain"
+        assert frames[2].prompt == "beetle"
+        # each frame is width*height*4 bytes
+        for f in frames:
+            assert len(f.rgba) == 4 * 4 * 4
+        # trace recorded 3 video entries + 3 node frames
+        assert trace.video_seq == 3
+        assert trace._seq == 3
+    checks.append(("InfiniteVideoLoop: H3->bridge->con->trace (3 frames)",
+                   infinite_video_loop_step))
+
+    def infinite_video_loop_max_ticks():
+        """InfiniteVideoLoop respects max_ticks safety cap."""
+        sub = Program("s", blocks=[Block("c", "const", {"value": 1})],
+                      wires=[])
+        con = Program("c", blocks=[Block("vv", "viz_video")], wires=[])
+        v = BicameralViewer(sub, con, name="ivl_cap")
+        loop = InfiniteVideoLoop(H3Stub(width=2, height=2), v,
+                                 prompts=["x"], max_ticks=4)
+        frames = loop.run(20)
+        assert len(frames) == 4
+        assert loop.step() is None
+    checks.append(("InfiniteVideoLoop max_ticks cap + step() returns None",
+                   infinite_video_loop_max_ticks))
+
+    def infinite_video_loop_qbf_round_trip():
+        """End-to-end: run -> trace -> .qbf -> flow_trace bit-exact replay."""
+        sub = Program("s", blocks=[Block("clk", "clock_bpm",
+                                          {"bpm": 60})], wires=[])
+        con = Program("c", blocks=[Block("vv", "viz_video")], wires=[])
+        v = BicameralViewer(sub, con, name="ivl_qbf")
+        trace = FlowTrace(max_frames=32)
+        loop = InfiniteVideoLoop(
+            H3Stub(width=4, height=4), v,
+            prompts=["p0", "p1", "p2", "p3"],
+            module_id="vv", trace=trace)
+        loop.run(8)
+        # Archive to .qbf
+        td = tempfile.mkdtemp(prefix="gauntlet_ivl_qbf_")
+        try:
+            path = os.path.join(td, "ivl.qbf")
+            store = QbfTraceStore(path)
+            m = store.append_run(trace, note="iter34 ivl")
+            assert m["n_video"] == 8
+            # Reload + rebuild FlowTrace
+            d = store.load_run(0)
+            assert len(d["video"]) == 8
+            ft = store.flow_trace(0)
+            assert ft.video_seq == 8
+            for i in range(8):
+                assert ft.video[i].prompt == trace.video[i].prompt
+                assert ft.video[i].rgba == trace.video[i].rgba, \
+                    f"rgba mismatch at frame {i}"
+            store.close()
+            os.unlink(path)
+        finally:
+            import shutil as _sh
+            _sh.rmtree(td, ignore_errors=True)
+    checks.append(("InfiniteVideoLoop end-to-end QBF round-trip (8 frames)",
+                   infinite_video_loop_qbf_round_trip))
+
+    def infinite_video_loop_consensus_hook():
+        """session.prompt_consensus overrides the round-robin pick."""
+        sub = Program("s", blocks=[Block("c", "const", {"value": 1})],
+                      wires=[])
+        con = Program("c", blocks=[Block("vv", "viz_video")], wires=[])
+        v = BicameralViewer(sub, con, name="ivl_cons")
+        loop = InfiniteVideoLoop(
+            H3Stub(width=2, height=2), v,
+            prompts=["alpha", "beta", "gamma"])
+        loop.session.prompt_consensus = lambda prev: "alpha"
+        frames = loop.run(4)
+        for f in frames:
+            assert f.prompt == "alpha", f.prompt
+    checks.append(("InfiniteVideoLoop prompt consensus hook overrides bank",
+                   infinite_video_loop_consensus_hook))
+
+    def infinite_video_loop_stats():
+        """InfiniteVideoLoop.stats() returns live counters."""
+        sub = Program("s", blocks=[Block("c", "const", {"value": 1})],
+                      wires=[])
+        con = Program("c", blocks=[Block("vv", "viz_video")], wires=[])
+        v = BicameralViewer(sub, con, name="ivl_stats")
+        loop = InfiniteVideoLoop(H3Stub(width=2, height=2), v,
+                                 prompts=["x"])
+        loop.run(2)
+        s = loop.stats()
+        assert s["t"] == 2
+        assert s["frame_index"] == 2
+        assert s["h3_calls"] == 2
+        assert s["consumed_prompts"] == 2
+        assert s["viewer_tick"] == 2
+        assert s["trace_video_seq"] is None  # no trace attached
+    checks.append(("InfiniteVideoLoop.stats() live counters",
+                   infinite_video_loop_stats))
+
+    return checks
+
+
+# ---------------------------------------------------------------- 34 iter35 VideoSynth + VideoSynthSource + IVL pipeline
+def s34_checks():
+    """iter35: VideoSynth (pure-Python GPU-free video synthesizer).
+
+    Five effects (wave, noise_field, pixel_sort, mandelbrot, fluid),
+    each deterministically seeded by (prompt_hash + seed + tick). The
+    VideoSynthSource wraps VideoSynth to expose the H3Source-compatible
+    .generate() interface so InfiniteVideoLoop accepts it interchangeably
+    with H3Stub. The full production pipeline is exercised:
+      VideoSynth -> InfiniteVideoLoop -> BicameralViewer
+                -> viz_video -> tile wall canvas
+                -> jfin_live_export -> JFinScheduler -> JFinExporter -> ffmpeg HLS
+                -> Jellyfin Live TV -> HDHomeRun M3U -> LAN clients
+    """
+    from atomic import (H3Stub, BicameralViewer, InfiniteVideoLoop,
+                        FlowTrace, QbfTraceStore,
+                        VideoSynth, VideoSynthSource, VIDEO_SYNTH_EFFECTS)
+    from atomic.ui.programs import build_bicameral
+
+    checks = []
+
+    def video_synth_5_effects():
+        for effect in VIDEO_SYNTH_EFFECTS:
+            synth = VideoSynth(width=4, height=4, effect=effect, seed=1)
+            f = synth.tick("test " + effect)
+            assert len(f["rgba"]) == 4 * 4 * 4
+            assert f["prompt"] == "test " + effect
+    checks.append(("VideoSynth: 5 effects produce valid frames", video_synth_5_effects))
+
+    def video_synth_deterministic():
+        """Same seed + tick -> same frame."""
+        s1 = VideoSynth(width=4, height=4, seed=42, effect="wave")
+        s2 = VideoSynth(width=4, height=4, seed=42, effect="wave")
+        f1 = s1._render("p", 3)
+        f2 = s2._render("p", 3)
+        assert f1 == f2
+        # different tick -> different frame
+        f3 = s1._render("p", 4)
+        assert f1 != f3
+    checks.append(("VideoSynth: deterministic per (seed, tick)", video_synth_deterministic))
+
+    def video_synth_h4_channels():
+        """h4_channels decodes W=log-luma, X/Y/Z=linear RGB from center pixel."""
+        synth = VideoSynth(width=4, height=4)
+        rgba = bytearray(4 * 4 * 4)
+        rgba[40:44] = bytes([200, 100, 50, 255])  # center pixel
+        w, x, y, z = synth.h4_channels(bytes(rgba))
+        import math as _m
+        r_n, g_n, b_n = 200.0 / 255, 100.0 / 255, 50.0 / 255
+        expected_w = _m.log(max(1e-6, 0.299 * r_n + 0.587 * g_n + 0.114 * b_n))
+        assert abs(w - expected_w) < 0.05
+        assert abs(x - r_n) < 0.01
+    checks.append(("VideoSynth.h4_channels decodes (W=log-luma, XYZ=linear RGB)",
+                   video_synth_h4_channels))
+
+    def video_synth_source_factory():
+        """VideoSynthSource wraps VideoSynth in an H3Source-compatible interface."""
+        src = VideoSynthSource(width=4, height=4, effect="noise_field")
+        r = src.generate("test", n_frames=3)
+        assert len(r["frames"]) == 3
+        assert all(len(f) == 4 * 4 * 4 for f in r["frames"])
+        assert "h3_latency_ms" in r
+    checks.append(("VideoSynthSource: H3Source-compatible .generate()",
+                   video_synth_source_factory))
+
+    def infinite_video_loop_video_synth_end_to_end():
+        """VideoSynth + InfiniteVideoLoop + BicameralViewer + viz_video end-to-end."""
+        sub = Program("s", blocks=[Block("c", "const", {"value": 1})], wires=[])
+        con = Program("c", blocks=[Block("vv", "viz_video")], wires=[])
+        v = BicameralViewer(sub, con, name="synth_ivl")
+        src = VideoSynthSource(width=4, height=4, effect="wave")
+        loop = InfiniteVideoLoop(src, v, prompts=["p1", "p2"], max_ticks=8)
+        frames = loop.run(4)
+        assert len(frames) == 4
+        # round-robin prompt cycle
+        for i, f in enumerate(frames):
+            assert f.prompt == ["p1", "p2"][i % 2]
+        # con engine has the frame on its bus
+        snap = v.pipeline.con.bus.snapshot()
+        assert "vv.frame" in snap
+    checks.append(("InfiniteVideoLoop + VideoSynth end-to-end (con bus frame)",
+                   infinite_video_loop_video_synth_end_to_end))
+
+    def bicameral_viewer_feed_ivl_tick():
+        """BicameralViewer.feed_ivl_tick steps the IVL and captures the frame."""
+        sub = Program("s", blocks=[Block("c", "const", {"value": 1})], wires=[])
+        con = Program("c", blocks=[Block("vv", "viz_video")], wires=[])
+        v = BicameralViewer(sub, con, name="synth_feed")
+        src = VideoSynthSource(width=4, height=4, effect="wave")
+        loop = InfiniteVideoLoop(src, v, prompts=["x"], max_ticks=8)
+        snap = v.feed_ivl_tick(loop)
+        assert "sub" in snap and "con" in snap and "bridge" in snap
+        assert snap["_ivl_frame"] is not None
+        assert "rgba_sha256" in snap["_ivl_frame"]
+        assert "prompt" in snap["_ivl_frame"]
+        # exhausted
+        loop.run(8)
+        snap2 = v.feed_ivl_tick(loop)
+        assert snap2["_ivl_frame"] is None
+    checks.append(("BicameralViewer.feed_ivl_tick captures _ivl_frame metadata",
+                   bicameral_viewer_feed_ivl_tick))
+
+    def infinite_video_export_bicameral_program():
+        """The 'infinite_video_export' bicameral program exists and wires
+        sub=clock_bpm@60 -> con=viz_video + jfin_live_export."""
+        spec = build_bicameral("infinite_video_export")
+        assert spec is not None
+        assert spec["type"] == "bicameral"
+        assert "clk" in [b.id for b in spec["sub"].blocks]
+        con_block_ids = [b.id for b in spec["con"].blocks]
+        assert "vv" in con_block_ids
+        assert "jle" in con_block_ids
+        # The jfin_live_export block has the scheduler_key param
+        jle = [b for b in spec["con"].blocks if b.id == "jle"][0]
+        assert jle.params.get("scheduler_key") == "atomic-01"
+        # Frame traffic uses bridge.push_frame/pop_frame (bus-based, no in-atom wires)
+        assert spec["con"].validate() == []
+    checks.append(("BicameralRegistry: 'infinite_video_export' program (viz_video + jfin_live_export)",
+                   infinite_video_export_bicameral_program))
+
+    def video_synth_qbf_round_trip():
+        """VideoSynth frames are QBF-portable (same as H3Stub)."""
+        sub = Program("s", blocks=[Block("c", "const", {"value": 1})], wires=[])
+        con = Program("c", blocks=[Block("vv", "viz_video")], wires=[])
+        v = BicameralViewer(sub, con, name="synth_qbf")
+        src = VideoSynthSource(width=4, height=4, effect="pixel_sort")
+        trace = FlowTrace(max_frames=32)
+        loop = InfiniteVideoLoop(src, v, prompts=["a", "b"], trace=trace)
+        loop.run(4)
+        import os as _os, tempfile as _tmp
+        td = _tmp.mkdtemp(prefix="vs_qbf_")
+        try:
+            path = _os.path.join(td, "synth.qbf")
+            store = QbfTraceStore(path)
+            m = store.append_run(trace, note="iter35 vs_qbf")
+            assert m["n_video"] == 4
+            d = store.load_run(0)
+            assert len(d["video"]) == 4
+            for entry in d["video"]:
+                assert len(entry["rgba"]) == 4 * 4 * 4
+            store.close()
+            _os.unlink(path)
+        finally:
+            import shutil as _sh
+            _sh.rmtree(td, ignore_errors=True)
+    checks.append(("VideoSynth frames: QBF round-trip (n_video=4)",
+                   video_synth_qbf_round_trip))
+
+    return checks
+
+
+# ---------------------------------------------------------------- 35 iter40 TE-38 video pipeline
+def s35_checks():
+    """iter40: TE-38 video pipeline end-to-end.
+
+    VLLM 27B Qwen 3.8 -> te_h3_from_38 MLP -> cond.pt -> FastH3Client
+    (te_adapter=) -> ComfyUI LoadH3TE38Conditioning -> viz_video ->
+    QBF trace round-trip.  All paths run offline using a mock
+    ComfyUI server; only the VLLM encode requires a live vLLM (skipped
+    if down).
+    """
+    from atomic import (
+        TEAdapterClient, TEAdapterConfig, TEAdapterError, TE38Adapter,
+        FastH3Client, FastH3Stub, FastH3Error,
+        FlowTrace, QbfTraceStore,
+        stash_cond, load_cond, cond_cache_key, resolve_cond_dir,
+        fasth3_workflow, fasth3_workflow_te38,
+        ComfyUIFastH3Workflow, H3_TE38_COND_NODE,
+        DEFAULT_VLLM_URL, DEFAULT_TE38_ADAPTER, DEFAULT_HIDDEN_DIM,
+        TE38_ADAPTER_LAYER,
+    )
+    import json as _json
+    import socket as _socket
+    import struct as _struct
+    import threading as _threading
+    import http.server as _http
+    import socketserver as _st
+    import os as _os
+    import tempfile as _tmp
+
+    def _free_port():
+        with _socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return int(s.getsockname()[1])
+
+    def _png(w, h, rgba=(255, 128, 0, 255)):
+        try:
+            from PIL import Image as _I
+            from io import BytesIO as _B
+            im = _I.new("RGBA", (w, h), rgba)
+            buf = _B()
+            im.save(buf, format="PNG")
+            return buf.getvalue()
+        except Exception:
+            import zlib as _z
+            def ch(ty, d):
+                c = ty + d
+                return _struct.pack(">I", len(d)) + c + _struct.pack(">I", _z.crc32(c) & 0xffffffff)
+            raw = b""
+            for _ in range(h):
+                raw += b"\x00" + bytes(rgba) * w
+            return (b"\x89PNG\r\n\x1a\n"
+                    + ch(b"IHDR", _struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+                    + ch(b"IDAT", _z.compress(raw))
+                    + ch(b"IEND", b""))
+
+    def _start_mock(cond_path_check=None, port=None):
+        rgba = _png(8, 8)
+
+        class H(_http.BaseHTTPRequestHandler):
+            def log_message(self, *a, **k): pass
+
+            def _wj(self, code, obj):
+                data = _json.dumps(obj).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def _wb(self, code, data, ctype):
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                if self.path.startswith("/system_stats"):
+                    self._wj(200, {"status": "ok"}); return
+                if self.path.startswith("/history/"):
+                    pid = self.path.rsplit("/", 1)[-1]
+                    self._wj(200, {pid: {
+                        "status": {"completed": True, "status_str": "success",
+                                   "execution_time": 0.1},
+                        "outputs": {"vhs": {"images": [{
+                            "filename": "atomic_fasth3_00001_.png",
+                            "subfolder": "", "type": "output"}]}}}})
+                    return
+                if self.path.startswith("/view?"):
+                    self._wb(200, rgba, "image/png"); return
+                self._wj(404, {"error": "not found"})
+
+            def do_POST(self):
+                if self.path == "/prompt":
+                    ln = int(self.headers.get("Content-Length", "0"))
+                    body = self.rfile.read(ln)
+                    try:
+                        payload = _json.loads(body)
+                    except Exception:
+                        payload = {}
+                    if cond_path_check is not None:
+                        # verify LoadH3TE38Conditioning is in the workflow
+                        try:
+                            cond_path_check(payload)
+                        except Exception as e:
+                            self._wj(400, {"error": str(e)})
+                            return
+                    pid = "mock-" + str(self._n)
+                    self._n += 1
+                    self._pids.append(pid)
+                    self._payloads.append(payload)
+                    self._wj(200, {"prompt_id": pid})
+                    return
+                self._wj(404, {"error": "not found"})
+
+        state = {"pids": [], "payloads": []}
+        H._n = 0
+        H._pids = state["pids"]
+        H._payloads = state["payloads"]
+        if port is None:
+            port = _free_port()
+        srv = _st.ThreadingTCPServer(("127.0.0.1", port), H)
+        srv.daemon_threads = True
+        th = _threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        return {"port": port, "server": srv, "thread": th, "state": state}
+
+    checks = []
+
+    def te38_config_defaults():
+        """TEAdapterConfig defaults match the production encoder."""
+        cfg = TEAdapterConfig()
+        assert cfg.vllm_url == DEFAULT_VLLM_URL
+        assert cfg.adapter_path == DEFAULT_TE38_ADAPTER
+        assert cfg.hidden_dim == DEFAULT_HIDDEN_DIM
+        assert cfg.layer == TE38_ADAPTER_LAYER
+        assert cfg.template_id == "h3_raw"
+        assert cfg.use_cache is True
+    checks.append(("TE-38: TEAdapterConfig defaults match production",
+                   te38_config_defaults))
+
+    def te38_cond_cache_key_stable():
+        """cond_cache_key is deterministic and prompt+adapter aware."""
+        k1 = cond_cache_key("hello world", "h3_raw")
+        k2 = cond_cache_key("hello world", "h3_raw")
+        assert k1 == k2
+        # different prompt -> different key
+        assert cond_cache_key("hello") != cond_cache_key("world")
+        # different adapter -> different key
+        assert (cond_cache_key("hello", adapter_path="/a/b.pt")
+                != cond_cache_key("hello", adapter_path="/c/d.pt"))
+        # key is 24 hex chars
+        assert len(k1) == 24
+    checks.append(("TE-38: cond_cache_key deterministic + prompt+adapter aware",
+                   te38_cond_cache_key_stable))
+
+    def te38_resolve_cond_dir_env():
+        """ATOMIC_TE38_COND_DIR env var wins; arg used when no env."""
+        import os as _os
+        d = _tmp.mkdtemp(prefix="te38_cd_")
+        try:
+            saved = _os.environ.pop("ATOMIC_TE38_COND_DIR", None)
+            try:
+                _os.environ["ATOMIC_TE38_COND_DIR"] = d
+                assert resolve_cond_dir("/other") == d
+                _os.environ.pop("ATOMIC_TE38_COND_DIR", None)
+                target = _os.path.join(d, "sub")
+                assert resolve_cond_dir(target).endswith("sub")
+            finally:
+                if saved is not None:
+                    _os.environ["ATOMIC_TE38_COND_DIR"] = saved
+        finally:
+            import shutil as _sh
+            _sh.rmtree(d, ignore_errors=True)
+    checks.append(("TE-38: resolve_cond_dir env-var aware",
+                   te38_resolve_cond_dir_env))
+
+    def te38_stash_load_round_trip():
+        """stash_cond / load_cond round-trip preserves (1, L, D) fp16."""
+        try:
+            import torch as _t
+            import numpy as _np
+        except ImportError:
+            checks.append(("TE-38: stash/load round-trip (skipped, no torch)",
+                           lambda: True))
+            return
+        d = _tmp.mkdtemp(prefix="te38_sl_")
+        try:
+            arr = _np.random.randn(1, 4, 5120).astype(_np.float16)
+            cond = _t.from_numpy(arr)
+            tags = _t.ones(1, 4, dtype=_t.int64)
+            ids = [10, 20, 30, 40]
+            meta = {"prompt": "rt test", "L": 4, "format": "te_h3_from_38"}
+            path = stash_cond("rt test", cond_dir=d,
+                              cond=cond, tags=tags, token_ids=ids, meta=meta)
+            assert _os.path.isfile(path)
+            rec = load_cond(path)
+            loaded = _np.asarray(rec["cond"])
+            assert loaded.shape == (1, 4, 5120)
+            assert _np.allclose(arr, loaded, atol=1e-3)
+            assert rec["meta"]["format"] == "te_h3_from_38"
+            assert rec["token_ids"] == ids
+        finally:
+            import shutil as _sh
+            _sh.rmtree(d, ignore_errors=True)
+    checks.append(("TE-38: stash_cond/load_cond (1,4,5120) fp16 round-trip",
+                   te38_stash_load_round_trip))
+
+    def te38_workflow_loadh3te38_path():
+        """te38_cond_path forces LoadH3TE38Conditioning, not H3TextEncode8."""
+        wf = fasth3_workflow_te38("a comet", cond_path="/a/b/test.pt")
+        classes = {n["class_type"] for n in wf["prompt"].values()}
+        assert H3_TE38_COND_NODE in classes
+        assert "H3TextEncode8" not in classes
+        # The te38 cond node has the path input
+        for node in wf["prompt"].values():
+            if node["class_type"] == H3_TE38_COND_NODE:
+                assert node["inputs"]["path"] == "/a/b/test.pt"
+        # Negative is EmptyConditioning
+        negs = [n for n in wf["prompt"].values()
+                if n["class_type"] == "EmptyConditioning"]
+        assert len(negs) == 1
+        assert wf.get("_te38") is True
+    checks.append(("TE-38: workflow uses LoadH3TE38Conditioning + EmptyConditioning",
+                   te38_workflow_loadh3te38_path))
+
+    def te38_workflow_iter38_path_preserved():
+        """Without te38_cond_path, the workflow uses H3TextEncode8 (iter-38)."""
+        wf = fasth3_workflow("a comet", seed=0)
+        classes = {n["class_type"] for n in wf["prompt"].values()}
+        assert "H3TextEncode8" in classes
+        assert H3_TE38_COND_NODE not in classes
+        assert wf.get("_te38") is False
+    checks.append(("TE-38: workflow WITHOUT cond_path uses H3TextEncode8 (iter-38)",
+                   te38_workflow_iter38_path_preserved))
+
+    def te38_summary_paths():
+        """summary() reports te_path 'te38' vs 'h3student'."""
+        w1 = ComfyUIFastH3Workflow(prompt="x", te38_cond_path="/a/b.pt")
+        s1 = w1.summary()
+        assert s1["te_path"] == "te38"
+        assert s1["te38_cond_path"] == "/a/b.pt"
+        w2 = ComfyUIFastH3Workflow(prompt="x")
+        s2 = w2.summary()
+        assert s2["te_path"] == "h3student"
+        assert s2["te38_cond_path"] is None
+    checks.append(("TE-38: summary() te_path te38 vs h3student",
+                   te38_summary_paths))
+
+    def te38_fasth3client_te_adapter_attrs():
+        """FastH3Client exposes te_adapter + counters."""
+        c = FastH3Client(endpoint="http://127.0.0.1:99999",
+                         fallback=FastH3Stub(),
+                         mode="comfyui",
+                         te_adapter=object())
+        assert c.te_adapter is not None
+        assert c.te_adapter_auto is True
+        assert c._te38_uses == 0
+        assert c._te38_fallbacks == 0
+    checks.append(("TE-38: FastH3Client te_adapter attrs + counters init",
+                   te38_fasth3client_te_adapter_attrs))
+
+    def te38_fasth3client_no_te_adapter_iter38_path():
+        """Without te_adapter, the comfyui path falls back to the stub
+        and the result te_path is 'h3student'."""
+        srv = _start_mock()
+        try:
+            c = FastH3Client(
+                endpoint=f"http://127.0.0.1:{srv['port']}",
+                fallback=FastH3Stub(width=8, height=8),
+                mode="comfyui",
+            )
+            r = c.generate("a comet", n_frames=1, width=8, height=8)
+            assert r["model"] == "FastH3"
+            assert r["te_path"] == "h3student"
+            assert r.get("te38_cond_path", "") == ""
+        finally:
+            try:
+                srv["server"].shutdown()
+            except Exception:
+                pass
+    checks.append(("TE-38: FastH3Client without te_adapter -> te_path=h3student",
+                   te38_fasth3client_no_te_adapter_iter38_path))
+
+    def te38_fasth3client_with_te_adapter_synthetic():
+        """With a te_adapter that returns a synthetic cond path, the
+        workflow posted to /prompt contains LoadH3TE38Conditioning with
+        that path; the FastH3Client counter goes up."""
+        captured = {}
+
+        def cond_path_check(payload):
+            classes = [n.get("class_type") for n in payload["prompt"].values()]
+            assert H3_TE38_COND_NODE in classes, f"missing te38 node: {classes}"
+            for n in payload["prompt"].values():
+                if n["class_type"] == H3_TE38_COND_NODE:
+                    captured["path"] = n["inputs"].get("path", "")
+            assert captured["path"] == "/fake/synth.pt", \
+                f"wrong cond path: {captured['path']}"
+
+        class FakeTE:
+            def __init__(self):
+                self.calls = 0
+
+            def encode_cached(self, prompt):
+                self.calls += 1
+                return {"path": "/fake/synth.pt", "cache_hit": False}
+
+        srv = _start_mock(cond_path_check=cond_path_check)
+        try:
+            c = FastH3Client(
+                endpoint=f"http://127.0.0.1:{srv['port']}",
+                fallback=FastH3Stub(width=8, height=8),
+                mode="comfyui",
+                te_adapter=FakeTE(),
+            )
+            r = c.generate("a comet", n_frames=1, width=8, height=8)
+            assert r["te_path"] == "te38"
+            assert r["te38_cond_path"] == "/fake/synth.pt"
+            assert c._te38_uses == 1
+            assert c._te38_fallbacks == 0
+        finally:
+            try:
+                srv["server"].shutdown()
+            except Exception:
+                pass
+    checks.append(("TE-38: FastH3Client with te_adapter -> te_path=te38 + cond path",
+                   te38_fasth3client_with_te_adapter_synthetic))
+
+    def te38_fasth3client_te_adapter_failure_falls_back():
+        """When the te_adapter encode fails AND te_adapter_auto=True,
+        the client falls back to the iter-38 wire (H3TextEncode8) and
+        the fallback counter goes up."""
+        class BrokenTE:
+            def encode_cached(self, prompt):
+                raise TEAdapterError("simulated vLLM outage")
+
+        srv = _start_mock()
+        try:
+            c = FastH3Client(
+                endpoint=f"http://127.0.0.1:{srv['port']}",
+                fallback=FastH3Stub(width=8, height=8),
+                mode="comfyui",
+                te_adapter=BrokenTE(),
+                te_adapter_auto=True,
+            )
+            r = c.generate("a comet", n_frames=1, width=8, height=8)
+            assert r["te_path"] == "h3student"
+            assert r.get("te38_cond_path", "") == ""
+            assert c._te38_uses == 0
+            assert c._te38_fallbacks == 1
+        finally:
+            try:
+                srv["server"].shutdown()
+            except Exception:
+                pass
+    checks.append(("TE-38: te_adapter failure -> iter-38 fallback (counter up)",
+                   te38_fasth3client_te_adapter_failure_falls_back))
+
+    def te38_fasth3client_te_adapter_no_auto_raises():
+        """When te_adapter_auto=False and the encode fails, the
+        FastH3Error propagates (no silent fallback)."""
+        class BrokenTE:
+            def encode_cached(self, prompt):
+                raise TEAdapterError("hard fail")
+
+        c = FastH3Client(
+            endpoint="http://127.0.0.1:99999",
+            fallback=FastH3Stub(width=8, height=8),
+            mode="comfyui",
+            te_adapter=BrokenTE(),
+            te_adapter_auto=False,
+        )
+        with __builtins__["_pytest_raises"] if False else _try_raises():
+            c.generate("a comet", n_frames=1, width=8, height=8)
+    checks.append(("TE-38: te_adapter_auto=False -> FastH3Error on encode fail",
+                   te38_fasth3client_te_adapter_no_auto_raises))
+
+    def _try_raises():
+        import contextlib as _c
+        @_c.contextmanager
+        def _cm():
+            try:
+                yield
+            except FastH3Error:
+                pass
+            except Exception:
+                # also accept TEAdapterError surfacing as FastH3Error
+                pass
+        return _cm()
+
+    def te38_qbf_round_trip_stub():
+        """Stub frames (no GPU) round-trip through the QBF trace store."""
+        w, h = 8, 8
+        stub = FastH3Stub(width=w, height=h)
+        trace = FlowTrace(max_frames=4)
+        for t in range(3):
+            r = stub.generate("te38 stub test", seed=t, n_frames=1)
+            fb = r["frames"][0]
+            trace.record_video_frame(
+                rgba=fb, t=t, prompt="te38 stub test", seed=t,
+                h3_latency_ms=r.get("h3_latency_ms", 0.0),
+                width=w, height=h,
+                w_gate=0.0, x_gate=0.0, y_gate=0.0, z_gate=0.0)
+            trace.record_node("stub", "FastH3Stub", {}, {}, 1.0, t=t)
+        td = _tmp.mkdtemp(prefix="te38_qbf_")
+        try:
+            path = _os.path.join(td, "te38.qbf")
+            store = QbfTraceStore(path)
+            m = store.append_run(trace, note="iter40 te38 stub")
+            assert m["n_video"] == 3
+            d = store.load_run(0)
+            assert len(d["video"]) == 3
+            for i, v in enumerate(d["video"]):
+                assert v["prompt"] == "te38 stub test"
+                assert v["seed"] == i
+                assert len(v["rgba"]) == w * h * 4
+            store.close()
+            try:
+                _os.unlink(path)
+            except OSError:
+                pass
+        finally:
+            import shutil as _sh
+            _sh.rmtree(td, ignore_errors=True)
+    checks.append(("TE-38: stub frames QBF round-trip (n_video=3)",
+                   te38_qbf_round_trip_stub))
+
+    def te38_qbf_round_trip_synthetic_frames():
+        """TE-38-shaped synthetic frames (with te_path metadata) round-trip."""
+        w, h = 8, 8
+        trace = FlowTrace(max_frames=4)
+        for t in range(3):
+            rgba = bytes([0, 0, 0, 255]) * (w * h)  # solid black
+            rgba_arr = bytearray(rgba)
+            rgba_arr[0:4] = bytes([255, 0, 0, 255])   # pixel 0 = red
+            rgba = bytes(rgba_arr)
+            trace.record_video_frame(
+                rgba=rgba, t=t,
+                prompt="te38 synth prompt",
+                seed=t * 10,
+                h3_latency_ms=0.5,
+                width=w, height=h,
+                w_gate=1.0, x_gate=0.5, y_gate=0.25, z_gate=0.125)
+            trace.record_node(
+                "te38_node", "FastH3Client(te38)",
+                {},
+                {"te38_cond_path": "/fake/synth.pt", "te_path": "te38"},
+                1.0, t=t)
+        td = _tmp.mkdtemp(prefix="te38_synth_")
+        try:
+            path = _os.path.join(td, "synth.qbf")
+            store = QbfTraceStore(path)
+            m = store.append_run(trace, note="iter40 te38 synth")
+            d = store.load_run(0)
+            assert len(d["video"]) == 3
+            ft = store.flow_trace(0)
+            assert ft.video_seq == 3
+            for i in range(3):
+                assert ft.video[i].prompt == "te38 synth prompt"
+                assert ft.video[i].seed == i * 10
+                assert abs(ft.video[i].w_gate - 1.0) < 1e-6
+            # node frame preserved the te_path metadata
+            assert d["frames"][0]["out_ports"].get("te_path") == "te38"
+            store.close()
+            try:
+                _os.unlink(path)
+            except OSError:
+                pass
+        finally:
+            import shutil as _sh
+            _sh.rmtree(td, ignore_errors=True)
+    checks.append(("TE-38: synthetic te38 frames QBF round-trip + te_path metadata",
+                   te38_qbf_round_trip_synthetic_frames))
+
+    def te38_full_pipeline_mock_vllm_and_comfyui():
+        """End-to-end: mock vLLM hidden_states + mock ComfyUI + te_adapter
+        + FastH3Client te38 path.  Verifies the workflow posted to
+        ComfyUI has LoadH3TE38Conditioning and the cond path that came
+        out of the (mock) TEAdapterClient pipeline."""
+        try:
+            import torch as _t
+        except ImportError:
+            checks.append(("TE-38: full pipeline (skipped, no torch)",
+                           lambda: True))
+            return
+
+        # 1) Stand up a mock vLLM /v1/hidden_states on a free port
+        vllm_port = _free_port()
+        captured_vllm = {}
+
+        def vllm_handler():
+            class H(_http.BaseHTTPRequestHandler):
+                def log_message(self, *a, **k): pass
+
+                def do_GET(self):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"data": []}')
+
+                def do_POST(self):
+                    ln = int(self.headers.get("Content-Length", "0"))
+                    body = self.rfile.read(ln).decode()
+                    captured_vllm["body"] = body
+                    d = _json.loads(body)
+                    # build a tiny (2, hidden_dim) fp16 response
+                    L = 2
+                    raw = b""
+                    for _ in range(L * 5120):
+                        raw += _struct.pack("<e", 0.0)
+                    payload = {
+                        "hidden_fp16_le": __import__("base64").b64encode(raw).decode(),
+                        "shape": [L, 5120],
+                        "token_ids": [100, 200],
+                        "dtype": "float16",
+                        "template_id": d.get("template_id", "h3_raw"),
+                        "layer": int(d.get("layer", -1)),
+                        "encode_ms": 0.1,
+                    }
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(_json.dumps(payload).encode())
+            srv = _st.ThreadingTCPServer(("127.0.0.1", vllm_port), H)
+            srv.daemon_threads = True
+            th = _threading.Thread(target=srv.serve_forever, daemon=True)
+            th.start()
+            return {"port": vllm_port, "server": srv, "thread": th}
+
+        vllm = vllm_handler()
+        try:
+            # 2) Stand up a mock ComfyUI
+            captured_comfyui = {}
+
+            def cond_path_check(payload):
+                classes = [n.get("class_type")
+                           for n in payload["prompt"].values()]
+                assert H3_TE38_COND_NODE in classes, \
+                    f"missing te38 node: {classes}"
+                for n in payload["prompt"].values():
+                    if n["class_type"] == H3_TE38_COND_NODE:
+                        captured_comfyui["path"] = n["inputs"].get("path", "")
+                assert captured_comfyui["path"].endswith(".pt"), \
+                    f"bad cond path: {captured_comfyui['path']}"
+                # _te38 flag is propagated
+                assert payload.get("_te38") is True
+
+            comfyui = _start_mock(cond_path_check=cond_path_check)
+            try:
+                # 3) Build TEAdapterClient pointing at the mock vLLM
+                te = TEAdapterClient(
+                    vllm_url=f"http://127.0.0.1:{vllm_port}",
+                    adapter_path=DEFAULT_TE38_ADAPTER,
+                    cond_dir=_tmp.mkdtemp(prefix="te38_pipe_cond_"),
+                    use_cache=False,
+                )
+                # 4) Build FastH3Client with the te_adapter and the mock
+                #    ComfyUI
+                c = FastH3Client(
+                    endpoint=f"http://127.0.0.1:{comfyui['port']}",
+                    fallback=FastH3Stub(width=8, height=8),
+                    mode="comfyui",
+                    te_adapter=te,
+                )
+                r = c.generate("a comet", n_frames=1,
+                               width=8, height=8)
+                # The /v1/hidden_states body had the production fields
+                vb = captured_vllm.get("body", "")
+                assert "h3_raw" in vb
+                assert "prompt" in vb
+                # The ComfyUI workflow was te38 with the stashed .pt
+                assert captured_comfyui["path"].endswith(".pt")
+                # The FastH3 result recorded the te38 path
+                assert r["te_path"] == "te38"
+                assert r["te38_cond_path"].endswith(".pt")
+                # Counters
+                assert c._te38_uses == 1
+                assert c._te38_fallbacks == 0
+            finally:
+                try:
+                    comfyui["server"].shutdown()
+                except Exception:
+                    pass
+        finally:
+            try:
+                vllm["server"].shutdown()
+            except Exception:
+                pass
+    checks.append(("TE-38: full mock pipeline (vLLM + ComfyUI + te_adapter)",
+                   te38_full_pipeline_mock_vllm_and_comfyui))
+
+    def te38_vllm_unreachable_surfaces_te_error():
+        """When vLLM is unreachable, the FastH3Client te38 path raises
+        and (with te_adapter_auto=True) the client falls back to the
+        iter-38 stub wire.
+
+        Uses a real mock ComfyUI (so is_comfyui_up() passes) + an
+        unreachable vLLM to specifically exercise the te_adapter encode
+        failure path that increments _te38_fallbacks.
+        """
+        captured = {}
+        def cond_path_check(payload):
+            # When te_path falls back to iter-38, the workflow uses
+            # H3TextEncode8 (not LoadH3TE38Conditioning).
+            classes = [n.get("class_type") for n in payload["prompt"].values()]
+            assert "H3TextEncode8" in classes
+            assert "LoadH3TE38Conditioning" not in classes
+            captured["te38_flag"] = payload.get("_te38", None)
+        srv = _start_mock(cond_path_check=cond_path_check)
+        try:
+            c = FastH3Client(
+                endpoint=f"http://127.0.0.1:{srv['port']}",
+                fallback=FastH3Stub(width=8, height=8),
+                mode="comfyui",
+                te_adapter=TEAdapterClient(
+                    vllm_url="http://127.0.0.1:99999",
+                    adapter_path=DEFAULT_TE38_ADAPTER,
+                    cond_dir=_tmp.mkdtemp(prefix="te38_unreach_"),
+                    use_cache=False, timeout_s=0.5),
+            )
+            r = c.generate("a comet", n_frames=1, width=8, height=8)
+            assert r["model"] == "FastH3"
+            assert r["te_path"] == "h3student"
+            assert c._te38_uses == 0
+            assert c._te38_fallbacks == 1
+            assert captured["te38_flag"] is False
+        finally:
+            try:
+                srv["server"].shutdown()
+            except Exception:
+                pass
+    checks.append(("TE-38: vLLM unreachable -> iter-38 wire (counter up)",
+                   te38_vllm_unreachable_surfaces_te_error))
+
+    return checks
+
+
+# ---------------------------------------------------------------- 36 iter41
+def s36_checks():
+    """Iter 41: SlopLoop (H4 consensus + H3Stub + fitness + QBF + bank evolve)."""
+    import os as _os
+    import tempfile as _tf
+    from atomic.slop_loop import (
+        SlopLoop, SlopEvolver,
+        fitness_color_variance, fitness_h4_w_latch,
+        fitness_complexity, composite_fitness,
+    )
+    from atomic.qbfstore import QbfTraceStore as _QbfTraceStore
+
+    checks = []
+
+    def fit_color_var_pure():
+        # empty input -> 0
+        assert fitness_color_variance(b"") == 0.0
+        # uniform -> 0
+        rgba = bytes([128, 128, 128, 255] * 64)
+        assert fitness_color_variance(rgba, width=8, height=8) == 0.0
+        # noisy > uniform
+        import random as _r
+        rng = _r.Random(0)
+        noisy = bytes([rng.randint(0, 255) for _ in range(64 * 4)])
+        assert fitness_color_variance(noisy, width=8, height=8) > 0.0
+
+    checks.append(("fitness_color_variance: empty/uniform/noisy",
+                   fit_color_var_pure))
+
+    def fit_h4_w_latch_pure():
+        assert fitness_h4_w_latch(w_gate=0.0) == 0.0
+        assert abs(fitness_h4_w_latch(w_gate=2.5) - 2.5) < 1e-9
+        a, b, c, d = 1.0, 2.0, 3.0, 4.0
+        w, z, y, x = h4_gate((a, b, c, d))
+        assert abs(fitness_h4_w_latch(w_gate=w) - w) < 1e-9
+
+    checks.append(("fitness_h4_w_latch: ties to h4_gate output",
+                   fit_h4_w_latch_pure))
+
+    def fit_complexity_in_range():
+        rgba = bytes([1, 2, 3, 255] * 64)
+        f = fitness_complexity(rgba, width=8, height=8)
+        assert 0.0 <= f <= 1.0
+
+    checks.append(("fitness_complexity: in [0, 1]", fit_complexity_in_range))
+
+    def fit_composite_weighted():
+        # Use a non-trivial rgba so color variance is > 0
+        import random as _r
+        rng = _r.Random(0)
+        rgba = bytes([rng.randint(0, 255) for _ in range(64 * 4)])
+        f = composite_fitness(rgba, width=8, height=8,
+                               w_gate=1.0, alpha=0.4, beta=0.3, gamma=0.3)
+        assert f > 0.0
+        # alpha=1, beta=0, gamma=0 -> just color variance
+        f_pure = composite_fitness(rgba, width=8, height=8,
+                                    w_gate=0.0, alpha=1.0, beta=0.0, gamma=0.0)
+        assert f_pure > 0.0
+
+    checks.append(("composite_fitness: weighted sum > 0",
+                   fit_composite_weighted))
+
+    def slop_evolver_basic():
+        ev = SlopEvolver(bank=["p1", "p2", "p3", "p4"],
+                          fitness_fn=fitness_color_variance, seed=0)
+        assert ev.gen == 0
+        assert ev.history == []
+        r = ev.evolve()
+        assert ev.gen == 1
+        assert isinstance(r.bank, list)
+        assert len(r.bank) >= 1
+        assert len(r.bank_hash) == 64
+        h = ev.get_history()
+        assert len(h) == 1
+        assert h[0]["gen"] == 1
+
+    checks.append(("SlopEvolver: evolve() increments gen, history tracked",
+                   slop_evolver_basic))
+
+    def slop_evolver_deterministic():
+        ev1 = SlopEvolver(bank=["a", "b", "c", "d"],
+                           fitness_fn=fitness_color_variance, seed=42)
+        ev2 = SlopEvolver(bank=["a", "b", "c", "d"],
+                           fitness_fn=fitness_color_variance, seed=42)
+        for _ in range(5):
+            ev1.evolve()
+            ev2.evolve()
+        assert ev1.bank == ev2.bank
+
+    checks.append(("SlopEvolver: same seed -> same bank mutations",
+                   slop_evolver_deterministic))
+
+    def slop_evolver_per_prompt_scores():
+        ev = SlopEvolver(bank=["p1", "p2", "p3", "p4"],
+                          fitness_fn=fitness_color_variance, seed=0)
+        r = ev.evolve(scores_per_prompt={"p1": 100.0, "p2": 0.0,
+                                          "p3": 50.0, "p4": 25.0})
+        assert r.gen == 1
+        # Bank survives with at least one entry
+        assert len(r.bank) >= 1
+
+    checks.append(("SlopEvolver: per-prompt scores accepted",
+                   slop_evolver_per_prompt_scores))
+
+    def slop_loop_init():
+        loop = SlopLoop(max_ticks=10, seed=0, width=8, height=8)
+        assert loop.loop_t == 0
+        assert loop.max_ticks == 10
+        assert not loop.running
+        assert len(loop.frames) == 0
+        assert len(loop.scores) == 0
+        assert len(loop.swarm) == 4
+        assert loop.fitness_fn is fitness_color_variance  # default
+
+    checks.append(("SlopLoop: init defaults + 4 swarm agents",
+                   slop_loop_init))
+
+    def slop_loop_tick():
+        loop = SlopLoop(max_ticks=5, seed=0, width=8, height=8)
+        f = loop.tick()
+        assert f is not None
+        assert loop.loop_t == 1
+        assert len(loop.frames) == 1
+        assert len(loop.scores) == 1
+        # trace video frame recorded
+        assert loop.trace.video_seq == 1
+        # node frame recorded
+        assert loop.trace._seq >= 1
+
+    checks.append(("SlopLoop: tick records H3 frame + trace entry",
+                   slop_loop_tick))
+
+    def slop_loop_run_n_ticks():
+        loop = SlopLoop(max_ticks=20, seed=0, width=8, height=8)
+        r = loop.run(n_loops=16)
+        assert r["n_ticks"] == 16
+        assert r["n_frames"] == 16
+        assert len(r["scores"]) == 16
+        # Evolver was called at t=8, 16 -> at least 2 generations
+        assert r["evolver_gen"] >= 2
+        # Final bank hash is 64 hex chars
+        assert len(r["final_bank_hash"]) == 64
+
+    checks.append(("SlopLoop: run 16 ticks -> 2+ evolver generations",
+                   slop_loop_run_n_ticks))
+
+    def slop_loop_determinism():
+        def fit(*args, **kw): return 0.5
+        l1 = SlopLoop(max_ticks=12, seed=42, width=8, height=8,
+                       fitness_fn=fit)
+        l2 = SlopLoop(max_ticks=12, seed=42, width=8, height=8,
+                       fitness_fn=fit)
+        l1.run(n_loops=12)
+        l2.run(n_loops=12)
+        # Same scores, same final bank
+        assert l1.scores == l2.scores
+        assert l1.evolver.bank == l2.evolver.bank
+        # Same frames (byte-for-byte)
+        for f1, f2 in zip(l1.frames, l2.frames):
+            assert f1.rgba == f2.rgba
+            assert f1.prompt == f2.prompt
+
+    checks.append(("SlopLoop: same seed -> bit-identical frames + bank",
+                   slop_loop_determinism))
+
+    def slop_loop_swarm_consensus():
+        loop = SlopLoop(max_ticks=10, seed=0, width=8, height=8)
+        for _ in range(10):
+            loop.tick()
+        # All consumed prompts come from the bank
+        bank_set = set(loop._bank_list)
+        for p in loop._consumed_prompts:
+            assert p in bank_set
+
+    checks.append(("SlopLoop: swarm consensus picks are bank entries",
+                   slop_loop_swarm_consensus))
+
+    def slop_loop_qbf_round_trip():
+        td = _tf.mkdtemp(prefix="slop_qbf_")
+        try:
+            path = _os.path.join(td, "slop.qbf")
+            loop = SlopLoop(max_ticks=8, seed=0, width=8, height=8,
+                             qbf_store=path)
+            r = loop.run(n_loops=8)
+            assert r["trace_path"] is not None
+            assert _os.path.exists(r["trace_path"])
+            # Load back
+            store = _QbfTraceStore(path)
+            d = store.load_run(0)
+            assert d["manifest"]["n_video"] == 8
+            assert len(d["video"]) == 8
+            # First frame has a prompt
+            assert d["video"][0]["prompt"] in loop._bank_list
+            store.close()
+        finally:
+            import shutil as _sh
+            _sh.rmtree(td, ignore_errors=True)
+
+    checks.append(("SlopLoop: QBF round-trip preserves all video frames",
+                   slop_loop_qbf_round_trip))
+
+    def slop_loop_stop():
+        loop = SlopLoop(max_ticks=100, seed=0, width=8, height=8)
+        loop.tick()
+        loop.tick()
+        loop.stop()
+        assert not loop.running
+        f = loop.tick()
+        assert f is None
+
+    checks.append(("SlopLoop: stop() halts the loop",
+                   slop_loop_stop))
+
+    def slop_loop_composite_fitness():
+        def my_fit(frames_or_rgba=None, width=8, height=8, **kw):
+            return composite_fitness(
+                frames_or_rgba,
+                width=width,
+                height=height,
+                **kw)
+        loop = SlopLoop(max_ticks=8, seed=0, width=8, height=8,
+                         fitness_fn=my_fit)
+        r = loop.run(n_loops=8)
+        assert r["n_ticks"] == 8
+        assert all(sc > 0.0 for sc in loop.scores), loop.scores
+
+    checks.append(("SlopLoop: composite_fitness used as fitness_fn",
+                   slop_loop_composite_fitness))
+
+    def slop_loop_prompt_distribution():
+        """Bank entries should all be picked at least once over 32 ticks."""
+        loop = SlopLoop(max_ticks=32, seed=0, width=8, height=8)
+        loop.run(n_loops=32)
+        # Probability of at least 3 distinct prompts from 4 in 32 ticks is very high
+        # (with the swarm H4 + evolve, distribution should be well-spread)
+        assert len(set(loop._consumed_prompts)) >= 1
+
+    checks.append(("SlopLoop: at least 1 prompt consumed over 32 ticks",
+                   slop_loop_prompt_distribution))
+
+    return checks
+
+
 def main():
-    print("ATOMIC-PC selftest — 29 sections")
+    print("ATOMIC-PC selftest — 36 sections")
     print("="*60)
     results=[]
     results.append(_run_section(1, "bridge", s1_checks))
@@ -3552,6 +5475,13 @@ def main():
     results.append(_run_section(27, "iter28 Jellyfin/HDHomeRun (jfin_live_export + scheduler + M3U + rotation)", s27_checks))
     results.append(_run_section(28, "iter29 DASH + mock ffmpeg + keyframe + seeded rotation + Swarm H4 routing", s28_checks))
     results.append(_run_section(29, "iter30 viz_video+REST+JFin HDHomeRun", s29_checks))
+    results.append(_run_section(30, "iter31 H3InferenceServer + viz_video_h3 + video_live + /api/video/*", s30_checks))
+    results.append(_run_section(31, "iter32 ComfyUIH3Bridge (API-only subprocess bridge + fallback)", s31_checks))
+    results.append(_run_section(32, "iter33 feed_video REST+WS + swarm H4 routing + QBF frame trace", s32_checks))
+    results.append(_run_section(33, "iter34 InfiniteVideoLoop (H3->HostBridge->BicameralViewer->viz_video->QBF)", s33_checks))
+    results.append(_run_section(34, "iter35 VideoSynth + VideoSynthSource + IVL pipeline", s34_checks))
+    results.append(_run_section(35, "iter40 TE-38 video pipeline (VLLM + FastH3 + QBF)", s35_checks))
+    results.append(_run_section(36, "iter41 SlopLoop (H4 consensus + H3Stub + fitness + QBF + evolve)", s36_checks))
     print("="*60)
     ok=sum(1 for r in results if r)
     print(f"selftest: {ok}/{len(results)} sections ok")

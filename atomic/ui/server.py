@@ -21,6 +21,8 @@ Routes:
   POST /api/jfin/export/{ch_id}/push  -> push a frame to an exporter
   POST /api/jfin/export/{ch_id}/stop  -> stop an exporter
   GET  /api/jfin/scheduler          -> JFinScheduler state (rotation, stats)
+  POST /api/video/start            -> start H3InferenceServer on port (default 8765)
+  POST /api/video/stop             -> stop H3InferenceServer on port (default 8765)
 
 The UI is a pure-web client.  The server is the bridge between the
 HTML5 tile wall (canvas redraws per tick) and the Python engine
@@ -417,6 +419,299 @@ def create_app() -> FastAPI:
         mode = payload.get("mode", "round_robin")
         return _JFIN_STATE.scheduler.rotate(programs, mode=mode)
 
+    # ── iter 31: H3InferenceServer lifecycle (spawn / kill) ─────────────
+    @app.post("/api/video/start")
+    async def video_start(payload: dict | None = None):
+        from ..video_server import _start_server
+        p = payload or {}
+        port = int(p.get("port", 8765))
+        width = int(p.get("width", 64))
+        height = int(p.get("height", 64))
+        n_frames = int(p.get("n_frames", 1))
+        return _start_server(port=port, width=width, height=height, n_frames=n_frames)
+
+    @app.post("/api/video/stop")
+    async def video_stop(payload: dict | None = None):
+        from ..video_server import _stop_server
+        p = payload or {}
+        port = int(p.get("port", 8765))
+        return _stop_server(port=port)
+
+    @app.get("/api/video/status")
+    async def video_status(port: int = 8765):
+        from ..video_server import _get_global_server
+        srv = _get_global_server(port)
+        if srv is None:
+            return {"status": "not_running", "port": port}
+        try:
+            health = srv.health()
+        except Exception as e:
+            health = {"status": "error", "error": str(e)}
+        return {
+            "status": "running" if srv.is_running else "stopped",
+            "port": srv.port,
+            "url": srv.url,
+            "width": srv.width,
+            "height": srv.height,
+            "health": health,
+        }
+
+    # ── iter 33: feed_video — server-push H3 frames into a viz_video engine ──
+    # feed_video_live program: viz_video reads bus[vv.frame]
+    # The feed_video tick path: POST /api/feed_video/{name}/push_frame
+    #   or WS /ws/feed_video/{name} for server-push tick loop
+
+    _FEED_VIDEO_SESSIONS: dict[str, object] = {}  # name -> session state
+
+    @app.post("/api/feed_video/{name}/start")
+    async def feed_video_start(name: str, payload: dict | None = None):
+        """Start a feed_video session: H3Stub generates frames pushed into the engine.
+
+        Payload: {h3_url?, width?, height?, prompts?, module_id?}
+        """
+        v = Viewer.get(name)
+        if v is None:
+            v = _auto_register(name)
+        if v is None:
+            raise HTTPException(404, f"program {name!r} not found")
+        p = payload or {}
+        h3_url = str(p.get("h3_url", "http://localhost:8765"))
+        width = int(p.get("width", 64))
+        height = int(p.get("height", 64))
+        prompts = p.get("prompts") or []
+        module_id = str(p.get("module_id", "vv"))
+
+        # Build H3 source: try H3InferenceServer client first, then local stub
+        from ..video import H3Client, H3Stub, H3Session
+        from ..video_server import _get_global_server
+        try:
+            srv = _get_global_server(int(h3_url.split(":")[-1]))
+            if srv is not None and srv.is_running:
+                h3 = H3Client(endpoint=h3_url)
+            else:
+                h3 = H3Stub(width=width, height=height)
+        except Exception:
+            h3 = H3Stub(width=width, height=height)
+
+        session = {
+            "h3": h3,
+            "module_id": module_id,
+            "width": width,
+            "height": height,
+            "prompts": list(prompts) if prompts else None,
+            "viewer_name": name,
+            "running": True,
+            "t": 0,
+            "frames_generated": 0,
+            "last_error": None,
+        }
+        _FEED_VIDEO_SESSIONS[name] = session
+        return {
+            "ok": True,
+            "name": name,
+            "module_id": module_id,
+            "width": width,
+            "height": height,
+            "prompts": session["prompts"],
+            "h3_kind": type(h3).__name__,
+        }
+
+    @app.post("/api/feed_video/{name}/stop")
+    async def feed_video_stop(name: str):
+        session = _FEED_VIDEO_SESSIONS.get(name)
+        if session is None:
+            raise HTTPException(404, f"no feed_video session for {name!r}")
+        session["running"] = False
+        return {"ok": True, "name": name, "running": False}
+
+    @app.post("/api/feed_video/{name}/push_frame")
+    async def feed_video_push_frame(name: str, req: Request):
+        """Push one RGBA frame (or a batch) into the feed_video session.
+
+        Accepts raw bytes or JSON {frames: [base64]} for batch.
+        """
+        session = _FEED_VIDEO_SESSIONS.get(name)
+        if session is None:
+            raise HTTPException(404, f"no feed_video session for {name!r}")
+        v = Viewer.get(name)
+        if v is None:
+            raise HTTPException(404, f"viewer {name!r} not found")
+        ctype = (req.headers.get("content-type") or "").lower()
+        module_id = session["module_id"]
+        if ctype.startswith("application/json"):
+            payload = await req.json()
+            frames_data = payload.get("frames") or []
+            if isinstance(frames_data, list) and len(frames_data) > 0:
+                results = []
+                for fdata in frames_data:
+                    if isinstance(fdata, str):
+                        import base64 as _b64
+                        raw = _b64.b64decode(fdata)
+                    elif isinstance(fdata, list):
+                        raw = bytes(int(x) & 0xff for x in fdata)
+                    else:
+                        raw = bytes(fdata)
+                    v.feed_video_tick(raw, module_id)
+                    results.append(len(raw))
+                session["frames_generated"] += len(frames_data)
+                return {"ok": True, "name": name, "frames": len(frames_data),
+                        "bytes_per_frame": results}
+            else:
+                raise HTTPException(400, "expected {frames: [base64]} for batch")
+        else:
+            raw = await req.body()
+            if not raw:
+                raise HTTPException(400, "empty body")
+            v.feed_video_tick(raw, module_id)
+            session["frames_generated"] += 1
+            return {"ok": True, "name": name, "bytes": len(raw)}
+
+    @app.post("/api/feed_video/{name}/batch")
+    async def feed_video_batch(name: str, payload: dict):
+        """Generate N frames via H3Stub and push them into the engine."""
+        session = _FEED_VIDEO_SESSIONS.get(name)
+        if session is None:
+            raise HTTPException(404, f"no feed_video session for {name!r}")
+        v = Viewer.get(name)
+        if v is None:
+            raise HTTPException(404, f"viewer {name!r} not found")
+        p = payload or {}
+        n_frames = int(p.get("n_frames", 8))
+        prompts = session.get("prompts")
+        h3 = session["h3"]
+        module_id = session["module_id"]
+        width = session["width"]
+        height = session["height"]
+
+        frames_out = []
+        for i in range(n_frames):
+            # Round-robin over prompts or generate one frame per tick
+            if prompts:
+                prompt = prompts[(session["t"] // 1) % len(prompts)]
+            else:
+                prompt = f"frame {session['t']}"
+            r = h3.generate(prompt, seed=session["t"],
+                            width=width, height=height)
+            rgba = r["frames"][0] if r.get("frames") else b""
+            v.feed_video_tick(rgba, module_id)
+            frames_out.append(len(rgba))
+            session["t"] += 1
+
+        session["frames_generated"] += n_frames
+        return {
+            "ok": True,
+            "name": name,
+            "n_frames": n_frames,
+            "bytes_per_frame": frames_out,
+            "t": session["t"],
+        }
+
+    @app.get("/api/feed_video/{name}/status")
+    async def feed_video_status(name: str):
+        session = _FEED_VIDEO_SESSIONS.get(name)
+        if session is None:
+            return {"running": False, "name": name, "frames_generated": 0, "t": 0}
+        v = Viewer.get(name)
+        return {
+            "running": session.get("running", False),
+            "name": name,
+            "module_id": session.get("module_id"),
+            "width": session.get("width"),
+            "height": session.get("height"),
+            "prompts": session.get("prompts"),
+            "frames_generated": session.get("frames_generated", 0),
+            "t": session.get("t", 0),
+            "viewer_tick": v.tick if v else 0,
+            "last_error": session.get("last_error"),
+        }
+
+    @app.websocket("/ws/feed_video/{name}")
+    async def ws_feed_video(name: str, ws: WebSocket):
+        """WebSocket server-push for feed_video: tick loop generates + pushes frames."""
+        import time
+        await ws.accept()
+        session = _FEED_VIDEO_SESSIONS.get(name)
+        if session is None:
+            await ws.send_text(json.dumps({"error": "no feed_video session"}))
+            await ws.close()
+            return
+        v = Viewer.get(name)
+        if v is None:
+            v = _auto_register(name)
+        if v is None:
+            await ws.send_text(json.dumps({"error": f"program {name!r} not found"}))
+            await ws.close()
+            return
+
+        module_id = session["module_id"]
+        h3 = session["h3"]
+        prompts = session.get("prompts")
+        width = session["width"]
+        height = session["height"]
+        session["running"] = True
+
+        try:
+            await ws.send_text(json.dumps(v.snapshot()))
+            stop = asyncio.Event()
+
+            async def tick_loop():
+                nonlocal _FEED_VIDEO_SESSIONS
+                first = True
+                while not stop.is_set():
+                    sess = _FEED_VIDEO_SESSIONS.get(name)
+                    if sess is None or not sess.get("running", False):
+                        stop.set()
+                        break
+                    t0 = time.perf_counter()
+                    # Generate one frame
+                    if prompts:
+                        prompt = prompts[sess.get("t", 0) % len(prompts)]
+                    else:
+                        prompt = f"frame {sess.get('t', 0)}"
+                    try:
+                        r = h3.generate(prompt, seed=sess.get("t", 0),
+                                        width=width, height=height)
+                        rgba = r["frames"][0] if r.get("frames") else b""
+                        session["last_error"] = None
+                    except Exception as exc:
+                        session["last_error"] = str(exc)
+                        rgba = b""
+                    v.feed_video_tick(rgba, module_id)
+                    sess["t"] = sess.get("t", 0) + 1
+                    sess["frames_generated"] = sess.get("frames_generated", 0) + 1
+                    eng_us = (time.perf_counter() - t0) * 1e6
+                    snap = v.snapshot()
+                    if first:
+                        snap["_lat_eng"] = eng_us
+                        first = False
+                    try:
+                        await ws.send_text(json.dumps(snap))
+                    except Exception:
+                        stop.set()
+                        return
+                    await asyncio.sleep(v.dt)
+
+            async def recv_loop():
+                while not stop.is_set():
+                    try:
+                        msg = await ws.receive_json()
+                    except Exception:
+                        stop.set()
+                        return
+                    await _handle_ws_msg(v, ws, msg)
+
+            t1 = asyncio.create_task(tick_loop())
+            t2 = asyncio.create_task(recv_loop())
+            try:
+                await asyncio.wait({t1, t2},
+                                   return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                stop.set()
+                for t in (t1, t2):
+                    t.cancel()
+        finally:
+            session["running"] = False
+
     # ── iter 4: record live WS to .qbf shard, list runs, replay ─────────────
     @app.post("/api/record/{name}")
     async def record(name: str, payload: dict):
@@ -508,6 +803,225 @@ def create_app() -> FastAPI:
                 t1.cancel()
         finally:
             v.ws_disconnect(q)
+
+    # ── iter 35: IVL REST + WS endpoints ────────────────────────────────────
+    _IVL_SESSIONS: dict[str, object] = {}  # name -> IVL session dict
+
+    @app.post("/api/ivl/{name}/start")
+    async def ivl_start(name: str, payload: dict | None = None):
+        """Start an IVL session: wires VideoSynth/H3Stub to a BicameralViewer.
+
+        Payload: {
+          h3_url?: str,        # H3InferenceServer URL (default: use VideoSynth)
+          effect?: str,        # VideoSynth effect (wave/noise_field/pixel_sort/mandelbrot/fluid)
+          width?: int, height?: int,
+          prompts?: list[str],
+          module_id?: str, bridge_latency?: int,
+          max_ticks?: int,
+        }
+        """
+        from ..video_synth import VideoSynth, VideoSynthSource
+        from ..video import H3Client, H3Stub
+        from ..video_server import _get_global_server
+        p = payload or {}
+        width = int(p.get("width", 64))
+        height = int(p.get("height", 64))
+        effect = str(p.get("effect", "wave"))
+        prompts = list(p.get("prompts") or [])
+        module_id = str(p.get("module_id", "vv"))
+        bridge_latency = int(p.get("bridge_latency", 1))
+        max_ticks = int(p.get("max_ticks", 1000))
+
+        bv = BicameralViewer.get(name)
+        if bv is None:
+            from .programs import build_bicameral as _bb
+            spec = _bb(name)
+            if spec is None:
+                raise HTTPException(404, f"program {name!r} not found")
+            bv = BicameralViewer(
+                spec["sub"], spec["con"],
+                bridge_map=spec["bridge_map"],
+                bridge_latency=spec["bridge_latency"],
+                use_h4=spec.get("use_h4", False),
+                name=name,
+            )
+            BicameralViewer.put(name, bv)
+
+        h3_url = str(p.get("h3_url", ""))
+        use_synth = not h3_url
+        if use_synth:
+            synth = VideoSynth(width=width, height=height, effect=effect, seed=0)
+            source = VideoSynthSource(synth=synth)
+            source_kind = f"VideoSynth({effect})"
+        else:
+            try:
+                port = int(h3_url.split(":")[-1])
+                srv = _get_global_server(port)
+                if srv is not None and srv.is_running:
+                    source = H3Client(endpoint=h3_url)
+                    source_kind = "H3Client"
+                else:
+                    source = H3Stub(width=width, height=height)
+                    source_kind = "H3Stub(fallback)"
+            except Exception:
+                source = H3Stub(width=width, height=height)
+                source_kind = "H3Stub(fallback)"
+
+        from ..video import InfiniteVideoLoop
+        loop = InfiniteVideoLoop(
+            source, bv,
+            prompts=prompts,
+            module_id=module_id,
+            bridge_latency=bridge_latency,
+            max_ticks=max_ticks,
+            trace=None,
+        )
+
+        session = {
+            "source": source,
+            "source_kind": source_kind,
+            "loop": loop,
+            "bv": bv,
+            "width": width,
+            "height": height,
+            "effect": effect,
+            "prompts": prompts,
+            "module_id": module_id,
+            "running": True,
+            "t": 0,
+            "frames_generated": 0,
+        }
+        _IVL_SESSIONS[name] = session
+        return {
+            "ok": True,
+            "name": name,
+            "source_kind": source_kind,
+            "effect": effect,
+            "width": width,
+            "height": height,
+            "module_id": module_id,
+            "max_ticks": max_ticks,
+        }
+
+    @app.post("/api/ivl/{name}/stop")
+    async def ivl_stop(name: str):
+        session = _IVL_SESSIONS.get(name)
+        if session is None:
+            raise HTTPException(404, f"no IVL session for {name!r}")
+        session["running"] = False
+        return {"ok": True, "name": name, "running": False}
+
+    @app.get("/api/ivl/{name}/stats")
+    async def ivl_stats(name: str):
+        session = _IVL_SESSIONS.get(name)
+        if session is None:
+            return {
+                "running": False,
+                "name": name,
+                "frames_generated": 0,
+                "t": 0,
+                "loop_stats": {},
+            }
+        loop = session["loop"]
+        ls = loop.stats() if loop else {}
+        src_stats = session.get("source", {}).stats() if hasattr(session.get("source"), "stats") else {}
+        return {
+            "running": session.get("running", False),
+            "name": name,
+            "source_kind": session.get("source_kind", ""),
+            "effect": session.get("effect", ""),
+            "t": session.get("t", 0),
+            "frames_generated": session.get("frames_generated", 0),
+            "loop_stats": ls,
+            "source_stats": src_stats,
+        }
+
+    @app.websocket("/ws/ivl/{name}")
+    async def ws_ivl(name: str, ws: WebSocket):
+        """WebSocket live stream for IVL: tick loop steps the InfiniteVideoLoop.
+
+        Each message is a snapshot dict from BicameralViewer.feed_ivl_tick(),
+        which includes `_ivl_frame` with frame metadata.
+        """
+        import time
+        await ws.accept()
+        session = _IVL_SESSIONS.get(name)
+        if session is None:
+            await ws.send_text(json.dumps({"error": "no IVL session"}))
+            await ws.close()
+            return
+        loop = session["loop"]
+        bv = session["bv"]
+        session["running"] = True
+        try:
+            await ws.send_text(json.dumps(bv.snapshot()))
+            stop = asyncio.Event()
+
+            async def tick_loop():
+                nonlocal _IVL_SESSIONS
+                first = True
+                while not stop.is_set():
+                    sess = _IVL_SESSIONS.get(name)
+                    if sess is None or not sess.get("running", False):
+                        stop.set()
+                        break
+                    t0 = time.perf_counter()
+                    frame = loop.step()
+                    if frame is None:
+                        stop.set()
+                        break
+                    snap = bv.snapshot()
+                    snap["_ivl_frame"] = {
+                        "t": frame.t,
+                        "seed": frame.seed,
+                        "prompt": frame.prompt,
+                        "h3_latency_ms": frame.h3_latency_ms,
+                        "size_bytes": frame.size_bytes,
+                        "rgba_sha256": frame.sha256,
+                    }
+                    sess["t"] = loop.t
+                    sess["frames_generated"] = sess.get("frames_generated", 0) + 1
+                    eng_us = (time.perf_counter() - t0) * 1e6
+                    if first:
+                        snap["_lat_eng"] = eng_us
+                        first = False
+                    try:
+                        await ws.send_text(json.dumps(snap))
+                    except Exception:
+                        stop.set()
+                        return
+                    await asyncio.sleep(bv.dt)
+
+            async def recv_loop():
+                while not stop.is_set():
+                    try:
+                        msg = await ws.receive_json()
+                    except Exception:
+                        stop.set()
+                        return
+                    kind = msg.get("type", "")
+                    if kind == "ping":
+                        try:
+                            await ws.send_text(json.dumps({"_pong": True}))
+                        except Exception:
+                            stop.set()
+                            return
+                    elif kind == "stop":
+                        stop.set()
+                        return
+
+            t1 = asyncio.create_task(tick_loop())
+            t2 = asyncio.create_task(recv_loop())
+            try:
+                await asyncio.wait({t1, t2},
+                                   return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                stop.set()
+                for t in (t1, t2):
+                    t.cancel()
+        finally:
+            if name in _IVL_SESSIONS:
+                _IVL_SESSIONS[name]["running"] = False
 
     return app
 

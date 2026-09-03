@@ -17,7 +17,7 @@ from .gates import ATOMS, Atom
 from .program import Program, Block, ProgramError, compile_program
 from .oracle import run, LiveOracle
 from .tiles import Display, Tile, TileGroup, ControlFrame, TileError
-from .trace import FrameEntry, FlowTrace, replay, replay_events, latency_histogram_from_trace
+from .trace import FrameEntry, VideoFrameEntry, FlowTrace, replay, replay_events, latency_histogram_from_trace
 from .qbf import (QbfFile, QbfError, RAW, JSON, H4, FLAG_CHECKSUM, FLAG_H4,
                    h4_gate, h4_inverse, h4_encode, h4_decode)
 from .qbfstore import QbfTraceStore, open_trace_store, close_all
@@ -28,11 +28,37 @@ from .teach import (TeacherRegistry, REGISTRY, register_example, match,
                      save_registry, load_registry)
 from .evolve import Evolver, EvolveResult
 from .bridge import (HostBridge, BicameralPipeline, BicameralResult,
-                     h4_row_cosine, row_cos_gate, h4_streaming_metrics,
-                     latency_histogram, bridge_benchmark)
+                      h4_row_cosine, row_cos_gate, h4_streaming_metrics,
+                      latency_histogram, bridge_benchmark)
+from .ui.bicameral_viewer import BicameralViewer
 from .demo import swarm_evolve_teach_demo
 from .video import (H3Client, H3Stub, H3File, H3Source, H3Session, H3Frame,
-                     H3Error, PROMPT_BANK_DEFAULT)
+                      H3Error, PROMPT_BANK_DEFAULT, InfiniteVideoLoop,
+                      FastH3Client, FastH3Stub, FastH3Source,
+                      FastH3Error, FastH3Frame, FastH3Session,
+                      FASTH3_DEFAULT_STEPS, FASTH3_DEFAULT_VSA,
+                      FASTH3_DEFAULT_VSA_KEEP, FASTH3_DEFAULT_QUANT,
+                      FASTH3_PROMPT_BANK_DEFAULT, InfiniteFastH3Loop)
+from .fasth3_server import (ComfyUIFastH3Workflow, ComfyUIWorkflowError,
+                              fasth3_workflow, fasth3_workflow_te38,
+                              is_comfyui_up,
+                              submit_prompt, poll_history, decode_first_frame,
+                              start_comfyui_vsa, stop_comfyui_vsa,
+                              FASTH3_GGUF_Q4, H3_4B_H3STUDENT,
+                              H3_TE38_COND_NODE, H3_TE38_COND_DIR,
+                              COMFYUI_DEFAULT_PORT)
+from .te_adapter import (TEAdapterError, TEAdapterConfig,
+                          VLLMHiddenStatesClient, TE38Adapter,
+                          TEAdapterClient,
+                          stash_cond, load_cond, cond_cache_key,
+                          resolve_cond_dir,
+                          DEFAULT_TE38_ADAPTER, DEFAULT_VLLM_URL,
+                          DEFAULT_COND_DIR, DEFAULT_HIDDEN_DIM,
+                          TE38_ADAPTER_LAYER, TE38_TEMPLATES)
+from .video_synth import VideoSynth, VideoSynthSource, EFFECTS as VIDEO_SYNTH_EFFECTS
+from .slop_loop import (SlopLoop, SlopEvolver, SlopEvolverResult,
+                        fitness_color_variance, fitness_h4_w_latch,
+                        fitness_complexity, composite_fitness)
 from .jellyfin import (JFinExporter, JFinM3U, JFinChannel, JFinScheduler,
                         make_default_channels, DEFAULT_LIVETV_DIR, DEFAULT_HLS_DIR,
                         h4_gate as jfin_h4_gate)
@@ -46,7 +72,7 @@ __all__ = ["Bus", "Node", "Port", "Wire", "Engine", "ATOMS", "Atom",
                 "Program", "Block", "ProgramError", "compile_program",
                 "run", "LiveOracle",
                 "Display", "Tile", "TileGroup", "ControlFrame", "TileError",
-                "FrameEntry", "FlowTrace", "replay", "replay_events",
+                "FrameEntry", "VideoFrameEntry", "FlowTrace", "replay", "replay_events",
                 "latency_histogram_from_trace",
                 "QbfFile", "QbfError", "RAW", "JSON", "H4",
                 "FLAG_CHECKSUM", "FLAG_H4",
@@ -63,8 +89,34 @@ __all__ = ["Bus", "Node", "Port", "Wire", "Engine", "ATOMS", "Atom",
                 "swarm_evolve_teach_demo",
                 "zg_available", "zg_version", "zg_query", "zg_query_rg", "zg_status",
                 "assert_retrieval", "CANONICAL_QUERIES",
-                "H3Client", "H3Stub", "H3File", "H3Source",
-                "H3Session", "H3Frame", "H3Error", "PROMPT_BANK_DEFAULT",
+                 "H3Client", "H3Stub", "H3File", "H3Source",
+                   "H3Session", "H3Frame", "H3Error", "PROMPT_BANK_DEFAULT",
+                   "InfiniteVideoLoop",
+                   "FastH3Client", "FastH3Stub", "FastH3Source",
+                   "FastH3Error", "FastH3Frame", "FastH3Session",
+                   "FASTH3_DEFAULT_STEPS", "FASTH3_DEFAULT_VSA",
+                   "FASTH3_DEFAULT_VSA_KEEP", "FASTH3_DEFAULT_QUANT",
+                   "FASTH3_PROMPT_BANK_DEFAULT", "InfiniteFastH3Loop",
+                    "ComfyUIFastH3Workflow", "ComfyUIWorkflowError",
+                    "fasth3_workflow", "fasth3_workflow_te38",
+                    "is_comfyui_up",
+                    "submit_prompt", "poll_history", "decode_first_frame",
+                    "start_comfyui_vsa", "stop_comfyui_vsa",
+                    "FASTH3_GGUF_Q4", "H3_4B_H3STUDENT",
+                    "H3_TE38_COND_NODE", "H3_TE38_COND_DIR",
+                    "COMFYUI_DEFAULT_PORT",
+                    "TEAdapterError", "TEAdapterConfig",
+                    "VLLMHiddenStatesClient", "TE38Adapter",
+                    "TEAdapterClient",
+                    "stash_cond", "load_cond", "cond_cache_key",
+                    "resolve_cond_dir",
+                    "DEFAULT_TE38_ADAPTER", "DEFAULT_VLLM_URL",
+                    "DEFAULT_COND_DIR", "DEFAULT_HIDDEN_DIM",
+                    "TE38_ADAPTER_LAYER", "TE38_TEMPLATES",
+                   "VideoSynth", "VideoSynthSource", "VIDEO_SYNTH_EFFECTS",
+                   "SlopLoop", "SlopEvolver", "SlopEvolverResult",
+                   "fitness_color_variance", "fitness_h4_w_latch",
+                   "fitness_complexity", "composite_fitness",
                 "JFinExporter", "JFinM3U", "JFinChannel", "JFinScheduler",
                 "make_default_channels", "register_jfin_scheduler",
                 "DEFAULT_LIVETV_DIR", "DEFAULT_HLS_DIR"]

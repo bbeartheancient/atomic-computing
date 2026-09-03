@@ -559,6 +559,19 @@
   </div>
 </div>
 
+<!-- iter 33: feed_video controls (visible when program == feed_video_live) -->
+<div id="feed-video-controls" style="display:none; flex:0 0 32px; align-items:center; gap:8px; padding:0 16px; background:#0a0a18; border-top:1px solid var(--tile-border); font-size:10px;">
+  <span style="color:var(--accent);font-weight:bold;">feed_video</span>
+  <input id="fv-prompts" placeholder="prompts (comma-sep)" style="flex:1;background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 6px;font-family:var(--font);font-size:10px;" value="a slow orbit around a frozen comet, neon city under heavy rain">
+  <input id="fv-width" type="number" min="8" max="512" step="8" value="64" style="width:50px;background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 4px;font-family:var(--font);font-size:10px;">
+  <span style="color:var(--text-dim);">x</span>
+  <input id="fv-height" type="number" min="8" max="512" step="8" value="64" style="width:50px;background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 4px;font-family:var(--font);font-size:10px;">
+  <button id="fv-start-btn" style="background:var(--accent);color:#000;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;font-weight:bold;">Start</button>
+  <button id="fv-stop-btn" style="background:#aa3333;color:#fff;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;font-weight:bold;" disabled>Stop</button>
+  <button id="fv-batch-btn" style="background:#2244aa;color:#fff;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;">Batch 8</button>
+  <span id="fv-status" style="color:var(--text-dim);">idle</span>
+</div>
+
 <div id="pane2-host-info" style="display:none;"></div>
 <div id="record-status" style="display:none;"></div>
 
@@ -971,6 +984,8 @@ function _switchProgram(name) {
   updateGroupBadges('tile');
   redrawWall('tile');
   document.getElementById('tick-counter').textContent = 't=0';
+  // iter 33: feed_video controls visibility
+  if (typeof checkFeedVideoProgram === 'function') checkFeedVideoProgram();
 }
 
 // ── Bus inspector (iter 5) ───────────────────────────────────────────────────
@@ -2671,6 +2686,163 @@ document.getElementById('sweep-replay-btn').addEventListener('click', () => {
 document.getElementById('sweep-stop-btn').addEventListener('click', _stopSweepReplay);
 startLoop();
 connectWS(state.name, 'tile');
- </script>
-</body>
-</html>
+
+// ── iter 33: feed_video controls ─────────────────────────────────────────────
+(function() {
+  const FV_WS_PATH = '/ws/feed_video/';
+  const controls = document.getElementById('feed-video-controls');
+  const startBtn = document.getElementById('fv-start-btn');
+  const stopBtn = document.getElementById('fv-stop-btn');
+  const batchBtn = document.getElementById('fv-batch-btn');
+  const statusEl = document.getElementById('fv-status');
+
+  let fvWs = null;
+  let fvWsName = null;
+  let fvSessionActive = false;
+
+  function setFvState(running) {
+    fvSessionActive = running;
+    startBtn.disabled = running;
+    stopBtn.disabled = !running;
+    statusEl.textContent = running ? 'streaming' : 'idle';
+  }
+
+  function showFeedVideoUI() {
+    if (controls) controls.style.display = 'flex';
+  }
+
+  function hideFeedVideoUI() {
+    if (controls) controls.style.display = 'none';
+  }
+
+  // Show controls only when the program matches
+  function checkFeedVideoProgram() {
+    if (state.name === 'feed_video_live') showFeedVideoUI();
+    else {
+      hideFeedVideoUI();
+      if (fvWs) { fvWs.close(); fvWs = null; }
+      setFvState(false);
+    }
+  }
+
+  startBtn.addEventListener('click', async () => {
+    const name = state.name;
+    const width = parseInt(document.getElementById('fv-width').value) || 64;
+    const height = parseInt(document.getElementById('fv-height').value) || 64;
+    const promptsRaw = document.getElementById('fv-prompts').value || '';
+    const prompts = promptsRaw.split(',').map(s => s.trim()).filter(Boolean);
+
+    // Start the session
+    let r;
+    try {
+      r = await fetch('/api/feed_video/' + name + '/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ width, height, prompts }),
+      });
+    } catch(e) {
+      statusEl.textContent = 'error: ' + e.message;
+      return;
+    }
+    if (!r.ok) { statusEl.textContent = 'start failed'; return; }
+    const d = await r.json();
+    statusEl.textContent = 'starting...';
+
+    // Connect WebSocket
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = proto + '//' + location.host + FV_WS_PATH + name;
+    if (fvWs) fvWs.close();
+    fvWsName = name;
+    fvWs = new WebSocket(wsUrl);
+
+    fvWs.addEventListener('open', () => {
+      setFvState(true);
+      statusEl.textContent = 'streaming';
+    });
+
+    fvWs.addEventListener('message', ev => {
+      try {
+        const snap = JSON.parse(ev.data);
+        applySnapshot(snap, 'tile');
+      } catch(e) { /* ignore */ }
+    });
+
+    fvWs.addEventListener('close', () => {
+      setFvState(false);
+      statusEl.textContent = 'stopped';
+      if (fvWsName === name) fvWs = null;
+    });
+
+    fvWs.addEventListener('error', () => {
+      statusEl.textContent = 'WS error';
+      setFvState(false);
+    });
+  });
+
+  stopBtn.addEventListener('click', async () => {
+    const name = fvWsName || state.name;
+    if (fvWs) { fvWs.close(); fvWs = null; }
+    setFvState(false);
+    try {
+      await fetch('/api/feed_video/' + name + '/stop', {method: 'POST'});
+    } catch(e) { /* ignore */ }
+    statusEl.textContent = 'stopped';
+  });
+
+  batchBtn.addEventListener('click', async () => {
+    const name = state.name;
+    const width = parseInt(document.getElementById('fv-width').value) || 64;
+    const height = parseInt(document.getElementById('fv-height').value) || 64;
+    const promptsRaw = document.getElementById('fv-prompts').value || '';
+    const prompts = promptsRaw.split(',').map(s => s.trim()).filter(Boolean);
+
+    // Ensure session is started
+    try {
+      await fetch('/api/feed_video/' + name + '/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ width, height, prompts }),
+      });
+    } catch(e) { /* ignore */ }
+
+    statusEl.textContent = 'batching...';
+    try {
+      const r = await fetch('/api/feed_video/' + name + '/batch', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ n_frames: 8 }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        // Fetch snapshot
+        const s = await fetch('/api/snapshot/' + name);
+        const snap = await s.json();
+        applySnapshot(snap, 'tile');
+        statusEl.textContent = 'batch ' + d.n_frames + ' frames';
+      } else {
+        statusEl.textContent = 'batch failed';
+      }
+    } catch(e) {
+      statusEl.textContent = 'error: ' + e.message;
+    }
+  });
+
+  // Check on program switch
+  checkFeedVideoProgram();
+  // Re-check when program changes (poll for a bit)
+  const _origSwitch = window._switchProgramOrig || _switchProgram;
+  window._switchProgramOrig = _switchProgram;
+  // Override _switchProgram to check feed_video after switch
+  const _origFn = _switchProgram;
+  window._switchProgram = function(name) {
+    _origFn.apply(this, arguments);
+    fvWsName = null;
+    if (fvWs) { fvWs.close(); fvWs = null; }
+    setFvState(false);
+    setTimeout(() => {
+      state.name = name;
+      checkFeedVideoProgram();
+    }, 100);
+  };
+})();
+

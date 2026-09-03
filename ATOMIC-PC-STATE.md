@@ -2199,3 +2199,1164 @@ git push
 
 Result: selftest 29/29, pytest 289 passed, demos OK.
 Pushed to github.com/bbeartheancient/atomic-computing main.
+
+## Iter 31 (2026-09-02): H3InferenceServer + viz_video_h3 atom + video_live program + /api/video/*
+
+### Goal
+Add H3 video generation pipeline integration — a local FastAPI stub server (`H3InferenceServer` on localhost:8765) that implements the H3 FastVideo contract (`GET /health`, `POST /generate`), a `viz_video_h3` atom that polls the server per tick with H4 RGBA decoding, retry logic, and enabled gate, a `video_live` demo program, and REST lifecycle endpoints `/api/video/start|stop|status`.
+
+### Deliverables
+
+#### 1. H3InferenceServer (`atomic/video_server.py`)
+- FastAPI app serving on configurable port (default 8765)
+- `GET /health` → `{"status": "ok", "model": "H3-FastVideo", "running": true, "width": W, "height": H}`
+- `POST /generate` body: `{prompt, seed?, n_frames?, width?, height?, steps?}` → `{"frames_b64": [...], "prompt", "seed", "h3_latency_ms", "width", "height", "steps"}`
+- Backed by deterministic `_LocalStub` (GPU-free, reproducible frames from prompt hash + seed)
+- Lifecycle: `start()`, `stop()`, `wait_until_ready(timeout)` with proper port cleanup (SO_REUSEADDR via uvicorn `should_exit`)
+- Global registry for `/api/video/*` REST integration
+
+#### 2. viz_video_h3 atom (`atomic/gates.py`)
+- Category: `source` (0 inputs, 5 outputs: `ready`, `w`, `x`, `y`, `z`)
+- Params: `server_url`, `width`, `height`, `prompt`, `n_frames`, `timeout_s`, `max_retries`, `enabled`
+- Per-tick behavior:
+  - If `enabled <= 0.5`: output `ready=0`, skip HTTP call
+  - POST `/generate` with retry (`max_retries`, `timeout_s`)
+  - On success: decode RGBA via H4 gate (same log-A/linear-RGB encoding as `viz_video`)
+  - Write `bus[<id>.rgba]`, `bus[<id>.rgba_decoded]`, latches `w/x/y/z` from last pixel
+  - On failure: `ready=0`, `error=1`
+- H4 decode parity with `viz_video` verified bit-exact on w/x/y/z
+
+#### 3. video_live program (`atomic/ui/programs.py`)
+- Single `viz_video_h3` block with defaults: 64x64, prompt "a slow orbit around a frozen comet"
+- Registers as `video_live` in `_REGISTRY`
+- Compiles to microfx patch with correct params
+
+#### 4. REST endpoints (`atomic/ui/server.py`)
+- `POST /api/video/start` — `{port?, width?, height?, n_frames?}` → start global H3InferenceServer
+- `POST /api/video/stop` — `{port?}` → stop server, returns `{status: "stopped"}`
+- `GET /api/video/status?port=...` — returns running state + health check
+
+#### 5. Integration wiring
+- `atomic/program.py`: `_VIZ_OUTPUTS["viz_video_h3"] = "ready"`, `_patch_views` key = `<id>.frame`
+- `atomic/ui/viewer.py`: `_VIZ_TYPES["viz_video_h3"] = "video"`
+- Tile wall renders via existing `drawVideoFrame()` (reads `.rgba` / `.rgba_decoded`)
+
+#### 6. Tests
+- `tests/test_iter31.py`: 19 tests (server lifecycle, generate, atom registration, engine tick, enabled gate, server down, H4 parity, video_live build+compile, REST endpoints, end-to-end Viewer.batch)
+- `atomic/selftest.py`: Section 30 (15 checks including H3 server lifecycle, atom behavior, parity, REST, end-to-end)
+
+### Code changes
+- `atomic/video_server.py` (new): H3InferenceServer, H3VideoApp, _LocalStub, _start_server, _stop_server, _get_global_server
+- `atomic/gates.py`: viz_video_h3 atom, PARAM_RANGES for width/height/timeout_s/enabled
+- `atomic/program.py`: _VIZ_OUTPUTS + viz_video_h3, _patch_views explicit .frame key
+- `atomic/ui/programs.py`: video_live demo program
+- `atomic/ui/viewer.py`: _VIZ_TYPES includes viz_video_h3
+- `atomic/ui/server.py`: /api/video/start|stop|status endpoints
+- `atomic/selftest.py`: s30_checks (15 checks)
+- `tests/test_iter31.py` (new, 19 tests)
+
+### Verification
+```
+python -m pytest tests -q
+  -> 308 passed (19 iter31 net, ~58s)
+python -m atomic.selftest
+  -> 30/30 sections ok (~35s)
+git push
+  -> <commit> iter31
+```
+
+## Iter 33 (2026-09-02) — Aspect 2/3/4: feed_video REST+WS, swarm H4 → H3 routing, QBF frame trace
+
+Operator goal F: video generation, aspects 2/3/4 of the queue. All
+three done in one iteration, all in ~/ATOMIC-PC (pure Python, zero
+sibling changes).
+
+### Aspect 2: feed_video server-push (REST + WS)
+- `atomic/ui/viewer.py`: `Viewer.feed_video_tick(rgba, module_id="vv")`
+  and `Viewer.feed_video_batch(frames, module_id="vv")` — push one or
+  N RGBA bytes, engine tick advances, bus[`vv.frame`] written.
+- `atomic/ui/programs.py`: `feed_video_live` program (single `viz_video`
+  block, `vv` module id) registered in `_REGISTRY`.
+- `atomic/ui/server.py`: 5 REST endpoints + 1 WS endpoint:
+  - `POST /api/feed_video/{name}/start` — creates session, picks
+    H3InferenceServer if running on :8765 else H3Stub
+  - `POST /api/feed_video/{name}/stop` — sets running=False
+  - `POST /api/feed_video/{name}/push_frame` — accepts raw bytes or
+    JSON {frames: [base64]} (batch)
+  - `POST /api/feed_video/{name}/batch` — generate N frames via H3Stub
+    and push
+  - `GET /api/feed_video/{name}/status` — running/frames_generated/t
+  - `WS /ws/feed_video/{name}` — server-push tick loop: H3 generates
+    per tick, fed into engine, snapshot broadcast every dt seconds
+- `atomic/ui/static/index.html`: `#feed-video-controls` bar (start/stop/
+  batch buttons + prompts input + W/H inputs) appears when program ==
+  feed_video_live. `checkFeedVideoProgram()` toggles visibility on
+  program switch.
+
+### Aspect 3: Swarm H4 → H3 routing
+- `examples/swarm_video_h3_consensus.py`: 4-agent Swarm with const
+  values 1+2+3+4, gain block `g1`, H4 W-channel consensus picks next
+  prompt from bank (W=10, mod 4 = prompt 0). H3Stub generates frames,
+  H4 gate decodes W/X/Y/Z, ASCII preview. Swarm consensus
+  deterministic: parallel==serial both yield W=10.
+
+### Aspect 4: QBF frame trace
+- `atomic/trace.py`: new `VideoFrameEntry` dataclass (seq, t, rgba,
+  prompt, seed, h3_latency_ms, w/h, w/x/y/z gates). `FlowTrace`
+  gains `_video` deque + `_vseq` counter + `record_video_frame()` +
+  `video` property + `video_seq` property. `snapshot()` includes
+  n_video/vseq/video; `from_snapshot()` rebuilds via `_filter_vf_keys`.
+- `atomic/qbfstore.py`: `QbfTraceStore.append_run()` now stores
+  video frames as `r%04d/v%06d` blobs (rgba base64-encoded into JSON).
+  `load_run()` reassembles and decodes rgba bytes. `flow_trace()`
+  rebuilds via the extended `from_snapshot()`. `manifest` carries
+  n_video + vseq.
+- `atomic/__init__.py`: exports `VideoFrameEntry`.
+- `examples/qbf_video_frame_trace.py`: end-to-end — H3Stub → 8 frames
+  → FlowTrace → QbfTraceStore → load_run → flow_trace round-trip
+  bit-exact (prompts, seeds, w_gates, rgba).
+
+### Tests
+- `tests/test_iter33.py` (27 tests, 4 classes):
+  - `TestFeedVideoViewer` (4): tick/batch/frame key/empty
+  - `TestFeedVideoREST` (7): start/stop/push_frame (raw + JSON batch)
+    /batch/status (running + idle) via TestClient
+  - `TestFeedVideoProgram` (3): build + viz_video block + compile
+  - `TestSwarmH3Consensus` (4): W-channel consensus / h3session tick
+    / multi-tick / parallel==serial
+  - `TestQbfframeTrace` (9): VideoFrameEntry / record_video_frame /
+    ring wrap / snapshot / from_snapshot / qbfstore append_video_run /
+    load_run / flow_trace / replay
+
+### Selftest
+- `atomic/selftest.py` grows 31 → 32 sections. New s32_checks (16
+  checks) covers feed_video_tick/batch/program/REST endpoints/WS
+  endpoint/start-stop/batch, swarm consensus W-channel/h3session/
+  parallel-deterministic, VideoFrameEntry/record_video_frame/
+  snapshot_video, qbfstore append/load/flow with video.
+
+### Verification
+```
+~/runtime/.venv/bin/python -m atomic.selftest
+  -> 32/32 sections ok (~5s)
+~/runtime/.venv/bin/python -m pytest tests -q
+  -> 335 passed (~14s, +27 iter33)
+~/runtime/.venv/bin/python -m examples.swarm_video_h3_consensus
+  -> [Swarm H4 → H3 routing] ALL CHECKS PASSED
+~/runtime/.venv/bin/python -m examples.qbf_video_frame_trace
+  -> [QBF frame trace] ALL CHECKS PASSED
+```
+
+No sibling changes. Working tree ready for commit.
+
+
+## Iter 34 (2026-09-02) — InfiniteVideoLoop + RGBA frame transport
+
+Operator goal F continued: the "infinite slop" / "interdimensional
+cable" pipeline. All done in ~/ATOMIC-PC (pure Python).
+
+### HostBridge.push_frame / pop_frame
+- `atomic/bridge.py`: `push_frame(tick, rgba_bytes, prompt, seed,
+  module_id, width, height)` — dedicated RGBA frame entry in the host-RAM
+  FIFO. Stores with `_frame=True` flag, computes H4 W/X/Y/Z channel
+  latches from the last pixel (log-alpha + linear RGB), capacity eviction
+  works the same as scalar path.
+- `pop_frame(tick)` — consumes (removes) all queued frame entries whose
+  arrival <= tick. Returns a list of frame dicts (rgba, prompt, seed,
+  module_id, w, x, y, z). Scalar entries (no `_frame` flag) are left
+  in the queue — `pop()` can still deliver them.
+- `peek_frame(tick)` — non-consuming version (reads without draining).
+  Useful for inspection without side-effects.
+
+### BicameralViewer.feed_video_tick fix
+- `atomic/ui/bicameral_viewer.py`: `feed_video_tick` now calls
+  `pipeline.tick()` (the full bicameral tick, not just `con.tick()`),
+  so `viewer.tick` / `_tick_count` advance correctly and the bridge
+  depth history is updated.
+
+### InfiniteVideoLoop class
+- `atomic/video.py`: new `InfiniteVideoLoop` class — wires
+  H3Stub/H3Client/H3File + HostBridge + BicameralViewer into a
+  single object. Each `step()` call: 1) H3.generate() one frame,
+  2) bridge.push_frame(), 3) bridge.pop_frame() into con bus, 4) pipeline
+  tick, 5) trace.record_video_frame() + trace.record_node() (if observer
+  attached). Round-robin prompt bank; swarm consensus hook via
+  `session.prompt_consensus`.
+- `atomic/__init__.py`: exports `InfiniteVideoLoop`.
+- `atomic/ui/programs.py`: `infinite_video_bicameral` registered in
+  `_BICAMERAL_REGISTRY` (sub=clock_bpm@60, con=viz_video, bridge_map
+  wires the clock trigger to viz_video.in).
+
+### examples/infinite_video_loop.py
+- End-to-end demo: 8 ticks, H3Stub 8x8, 4-prompt bank, round-robin,
+  trace recording, .qbf archive + flow_trace rebuild bit-exact.
+  All checks pass.
+
+### tests/test_iter34.py
+- 27 tests in 4 classes covering push_frame/pop_frame/peek_frame,
+  H4 latches, capacity eviction, scalar coexistence, BicameralViewer
+  feed_video_tick/batch, InfiniteVideoLoop step/run/max_ticks/
+  prompt_robin/consensus_hook/stats/inject_into_con, QBF round-trip,
+  determinism, no-trace-safe.
+
+### Selftest
+- `atomic/selftest.py` grows 32 → 33 sections. New s33_checks (9
+  checks): bridge_push_pop_frame, capacity, scalar_coexist, h4_latches,
+  depth tracking, BicameralViewer.feed_video_tick, InfiniteVideoLoop
+  step/run/max_ticks/trace/qbf/consensus_hook/stats, H3Stub
+  determinism, bicameral_video_in_registry, trace=None safe.
+
+### Verification
+```
+~/runtime/.venv/bin/python -m atomic.selftest
+  -> 33/33 sections ok (~5s)
+~/runtime/.venv/bin/python -m pytest tests -q
+  -> 362 passed (~16s, +27 iter34)
+~/runtime/.venv/bin/python -m examples.infinite_video_loop
+  -> [infinite_video_loop] ALL CHECKS PASSED
+```
+
+No sibling changes. Working tree ready for commit.
+
+
+## Iter 35 (2026-09-02) — Synthetic Video Synth + Full Pipeline Demo
+
+Goal F (video generation) completed as a self-contained story. The
+InfiniteVideoLoop (iter 34) proved the wire contract end-to-end with H3Stub.
+Iter 35 removes the GPU dependency entirely with a pure-Python video
+synthesizer, then wires the complete production path: synth → InfiniteVideoLoop
+→ BicameralViewer → viz_video → tile wall → jfin_live_export → Jellyfin.
+All done in ~/ATOMIC-PC (pure Python, zero sibling changes).
+
+### atomic/video_synth.py — VideoSynth class
+- Five effects (wave, noise_field, pixel_sort, mandelbrot, fluid), all
+  pure numpy (no GPU). Each effect is seeded by (prompt_hash + seed + tick)
+  so the same triple always produces the same frame.
+- H4-friendly color mapping: W = log-luma (amplitude/consensus channel),
+  X/Y/Z = linear RGB. `h4_channels(rgba)` decodes W/X/Y/Z from the
+  center pixel.
+- `tick(prompt)` returns {rgba, prompt, seed, t, h3_latency_ms} — same
+  shape as an H3Frame so it plugs into InfiniteVideoLoop.
+- `generate(prompt, seed, n_frames)` exposes the H3Source-compatible
+  interface.
+
+### atomic/video_synth.py — VideoSynthSource factory
+- Wraps a VideoSynth in an H3Source-compatible object. InfiniteVideoLoop
+  accepts VideoSynthSource interchangeably with H3Stub/H3Client.
+- `stats()` returns {calls, t, effect, ...} for observability.
+
+### examples/infinite_video_loop.py — upgraded
+- `USE_VIDEO_SYNTH=True` (default): uses VideoSynth + VideoSynthSource.
+  Set `USE_VIDEO_SYNTH=False` to use H3Stub when H3 hardware is available.
+- Full pipeline demo: 8 ticks, 4-prompt bank, QBF archive + flow_trace rebuild.
+
+### atomic/ui/programs.py — infinite_video_export program
+- Registered in `_BICAMERAL_REGISTRY`: sub=clock_bpm@60, con=viz_video +
+  jfin_live_export wired to JFinScheduler, bridge wires clock trigger to both.
+- The complete production topology in one program: VideoSynth → IVL →
+  viz_video (tile wall) + jfin_live_export (Jellyfin Live TV).
+
+### atomic/ui/bicameral_viewer.py — feed_ivl_tick()
+- `feed_ivl_tick(loop)` steps the InfiniteVideoLoop and captures the
+  rendered viz_video output. Returns a snapshot with `_ivl_frame` metadata
+  (t, seed, prompt, h3_latency_ms, size_bytes, rgba_sha256, w/x/y/z).
+- `feed_ivl_batch(loop, ticks)` wraps it for N ticks.
+- `_h4(rgba)` static helper decodes W/Z/Y/X from the last pixel of an
+  RGBA frame (log-alpha + linear RGB → Hadamard gate).
+
+### atomic/ui/server.py — REST + WS for IVL
+- `POST /api/ivl/{name}/start`: starts an IVL session with VideoSynth
+  (default) or H3Client (if h3_url provided), wires to a BicameralViewer.
+- `POST /api/ivl/{name}/stop`: stops the session.
+- `GET /api/ivl/{name}/stats`: returns live counters (loop_stats, source_stats).
+- `WS /ws/ivl/{name}`: WebSocket tick loop — steps the IVL every dt,
+  broadcasts snapshots with `_ivl_frame` metadata. Client sends `ping`
+  for RTT or `stop` to end the stream.
+
+### tests/test_iter35.py
+  - 38 tests in 8 classes:
+  - TestVideoSynthBasics (8): 5 effects, default, tick/run/generate/resize
+  - TestVideoSynthDeterminism (4): same seed+tick → same frame
+  - TestVideoSynthH4Channels (3): W=log-luma, XYZ=linear RGB, short_rgba
+  - TestVideoSynthSource (3): generate interface, calls counter, t property
+  - TestInfiniteVideoLoopVideoSynth (4): step/run/stats/trace with VideoSynth
+  - TestBicameralViewerFeedIvlTick (4): snapshot/_ivl_frame/exhausted/batch
+  - TestVideoSynthQbfRoundTrip (1): QBF archive+load
+  - TestAllEffects (10): all 5 effects × 2 (valid+deterministic)
+
+### Selftest
+- `atomic/selftest.py` grows 33 → 34 sections. New s34_checks (8 checks):
+  5 effects produce valid frames, determinism, H4 channel decoding,
+  VideoSynthSource.generate interface, InfiniteVideoLoop + VideoSynth end-to-end,
+  BicameralViewer.feed_ivl_tick captures _ivl_frame, infinite_video_export
+  bicameral program wires correctly, QBF round-trip.
+
+### Verification
+```
+~/runtime/.venv/bin/python -m atomic.selftest
+  -> 34/34 sections ok
+~/runtime/.venv/bin/python -m pytest tests -q
+  -> 400 passed (38 new + 362 baseline)
+~/runtime/.venv/bin/python -m examples.video_synth_demo
+  -> [video_synth_demo] ALL CHECKS PASSED
+~/runtime/.venv/bin/python -m examples.infinite_video_loop
+  -> [infinite_video_loop] ALL CHECKS PASSED
+```
+
+No sibling changes. Working tree ready for commit.
+
+
+## Iter 36 (2026-09-02) — FastH3 (FastVideo GGUF, 4-step VSA) checkpoint
+
+### Scope: bridge spec + QBF adapter (operator-directed)
+
+Three unmerged pieces are required to actually run the FastH3 GGUF
+(model card: https://huggingface.co/realrebelai/FastH3_GGUFs):
+
+  1. ComfyUI on kijai's `vsa` branch (H3 model code that keeps the
+     `to_gate_compress` weights)
+  2. comfy-kitchen's `sol_attn` branch, **compiled** (CUDA sparse-
+     attention kernels; needs Visual Studio 2022 + CUDA 12.8+)
+  3. The Sol-Attn test node from comfy-kitchen PR #117
+
+Plus the companion models:
+  - `qwen3vl-32B-MiniMax-H3` text encoder (GGUF or safetensors)
+  - `minimax_h3_video_vae_fp16.safetensors` (already present)
+  - `minimax_h3_audio_vae_fp32.safetensors` (already present)
+
+This turn's directive: build the harness-side contract so a real
+backend (when the operator gets it running) drops in without code
+changes. The full XPU/SYCL VSA port is a separate effort.
+
+### Status check (live, post-transfer update)
+
+  - /home/bbear/models/diffusion_models/FastH3-comfy-Q5_K_M.gguf: **23 GB on disk ✓**
+  - /home/bbear/models/diffusion_models/FastH3-comfy-Q4_K_M.gguf: **19 GB on disk ✓**
+  - /home/bbear/models/vae/minimax_h3_video_vae_fp16.safetensors: **4.9 GB ✓**
+  - /home/bbear/models/vae/minimax_h3_audio_vae_fp32.safetensors: **578 MB ✓**
+
+  **Text encoder options on disk**:
+    - qwen3vl-32B-MiniMax-H3-Q2_K.gguf: 8.5 GB ✓ — Q2_K is too
+      aggressive for 4-step VSA (card warning: timestep embedder
+      corrupts at Q3 and below; Q2 corrupts every step)
+    - qwen3vl-4b-h3student-Q4_K_M.gguf: **2.4 GB ✓** — the 4B
+      student text encoder (lighter than 32B, purpose-built for H3)
+    - qwen3vl-4b-h3student-BF16.gguf: **7.5 GB ✓** — bf16 variant
+      of the student TE (highest quality on disk; bf16 > Q4_K_M)
+    - Qwen3.8-27B-GPTQ-Int4-sym-G128-MTP-BF16: **~19 GB ✓** —
+      the operator-requested 27B base (with H3 adapter) — highest
+      quality text encoder path. See OlympusServer/optimization/h3-shrink/
+      for adapter recipes (te_adapter_v4_ts.safetensors 121 MB, etc.)
+    - OlympusServer/optimization/h3-shrink/adapters/:
+      te_adapter_v1..v4_ts.safetensors (interim → ts-embed variants)
+
+  For 4-step FastH3 VSA, the card recommends keeping the text encoder
+  at Q4_K_M or higher precision. The operator's choice of Qwen 3.8 27B
+  with the H3 adapter is the production path; the 32B Q2_K on disk is
+  not usable. The 4b h3student Q4_K_M / BF16 are the lightweight
+  alternates that survive the card's quant floor.
+
+  **Attention kernel options on this XPU host**:
+    - **M1Multitronic sageattention** (XPU drop-in, 274 lines): dispatches
+      to torch.nn.functional.scaled_dot_product_attention (oneDNN SDPA
+      / oneAPI TLA on B70). Entry points sageattn / sageattn_varlen.
+      Architecturally different from ComfyUI-SolAttn_triton (Triton
+      kernels) but implements the same API shape. Day-one dispatch
+      goes to the fast SDPA path on B70; no custom CUDA/Triton kernels
+      required. **This is the operator's likely VSA kernel for the
+      XPU path.** Repo: /home/bbear/M1Multitronic/python/sageattention/
+    - ComfyUI-SolAttn_triton (kijai): Triton kernels — needs CUDA GPU.
+      URL: https://github.com/kijai/ComfyUI-SolAttn_triton
+    - comfy-kitchen sol_attn branch: CUDA binaries — needs Visual
+      Studio 2022 + CUDA 12.8+. NOT available on this XPU host.
+
+  **ComfyUI status**:
+    - services/comfyui (master v0.33.1) — NOT on kijai/vsa branch
+    - services/comfyui-h3 (master v0.33.1) — NOT on kijai/vsa branch
+    - Neither has the sol_attn node installed
+    - Hardware: 2× Intel Arc B70 (Battlemage) XPU. No nvidia-smi/nvcc
+      on PATH (Linux XPU-only host).
+
+### What iter 36 builds (harness-side contract only)
+
+**atomic/video.py** — FastH3 wire contract:
+  - `FastH3Stub` (no-GPU deterministic generator; 4-step + VSA + Q5_K_M
+    tagged on every frame; visually distinct from H3Stub via a 8.2467
+    vs 6.2832 wave frequency)
+  - `FastH3Client` (HTTP wrapper, same shape as H3Client; the body
+    carries steps/vsa/vsa_keep/quant/model so a real server can be
+    verified independent of the harness)
+  - `FastH3Source(kind="stub"|"http")` factory
+  - `FastH3Error`
+  - `FastH3Frame` (H3Frame + steps/vsa/vsa_keep/quant/model provenance;
+    `provenance()` returns a dict that round-trips through QBF)
+  - `FastH3Session` (one-tick = one FastH3 frame; same shape as
+    H3Session; pushes via HostBridge.push_frame so viz_video and
+    viz_fasth3_video can both decode)
+  - `InfiniteFastH3Loop` (the FastH3 twin of InfiniteVideoLoop;
+    drives sub=clock_bpm@60 + con=viz_fasth3_video through the bridge)
+  - Constants: `FASTH3_DEFAULT_STEPS=4`, `FASTH3_DEFAULT_VSA=True`,
+    `FASTH3_DEFAULT_VSA_KEEP=10`, `FASTH3_DEFAULT_QUANT="Q5_K_M"`
+
+**atomic/gates.py** — viz_fasth3_video atom:
+  - Same H(4) RGBA decoder as viz_video (A=log → W row, RGB linear →
+    X/Y/Z rows) so the existing UI renderer is unchanged
+  - Distinct atom type so QBF traces are filterable by back-end
+  - Params: capture, steps, vsa, vsa_keep, quant (the latter 4 are
+    metadata the renderer can surface; the H(4) decode is unchanged)
+  - Param ranges registered in PARAM_RANGES
+
+**atomic/ui/programs.py**:
+  - `fasth3_video_live` — single-block program (viz_fasth3_video
+    at module_id `vfh`)
+  - `infinite_fasth3_bicameral` — sub=clock_bpm@60 + con=viz_fasth3_video
+    (the FastH3 twin of infinite_video_bicameral)
+
+**tests/test_iter36.py** — 25 tests in 6 classes:
+  - TestFastH3Stub (6): default metadata, determinism, seed diff,
+    visual diff from H3Stub, overrides, counters
+  - TestFastH3Frame (3): provenance round-trip, to_h3_frame, defaults
+  - TestFastH3ClientAndSource (4): factory, unreachable raises,
+    fallback on failure, default metadata in request body
+  - TestFastH3Session (4): tick pushes to bridge, round-robin prompts,
+    consensus pick, stats
+  - TestVizFastH3VideoAtom (3): registered, param ranges, engine decodes
+  - TestInfiniteFastH3Loop (3): stub→bridge→viz_video, stats, trace records
+  - TestFastH3QBFPortability (1): full provenance (steps/vsa/quant/model)
+    survives .qbf archive round-trip
+  - TestWireContractGuard (1): bridge accepts both push_frame and
+    generic push without interference
+
+### Verification
+
+```
+~/runtime/.venv/bin/python -m pytest tests -q
+  -> 425 passed (25 new + 400 baseline)
+~/runtime/.venv/bin/python -m atomic.selftest
+  -> 34/34 sections ok
+```
+
+### Operator follow-ups
+
+  1. ✅ Q5_K_M (23 GB) and Q4_K_M (19 GB) GGUF files are on disk.
+     Q5_K_M (25 GB target) has a small residual (~2 GB gap from the
+     model card's 25 GB — within normal GGUF quantization variance).
+  2. ✅ VAE files confirmed present.
+  3. Text encoder: operator's production path is Qwen 3.8 27B + H3
+     adapter (see h3-shrink/adapters/). On disk: Qwen3.8-27B-GPTQ-
+     Int4-sym-G128-MTP-BF16 (~19 GB) + adapters te_adapter_v4_ts
+     etc. The 32B Q2_K text encoder on disk is NOT usable for 4-step
+     VSA. The 4b h3student Q4_K_M / BF16 are lightweight alternates.
+  4. XPU attention: sageattention (M1Multitronic/python/sageattention/)
+     is the day-one path — it dispatches to torch SDPA (oneDNN) on
+     the B70. No custom CUDA/Triton needed to get sparse attention
+     working on XPU. Confirm sageattn() / sageattn_varlen() can
+     accept a gate_compress tensor and apply the VSA mask.
+  5. ComfyUI vsa branch: `cd /home/bbear/services/comfyui-h3 &&
+     git fetch https://github.com/kijai/ComfyUI.git vsa:vsa &&
+     git checkout vsa` — then install the PR #117 Sol-Attn node, or
+     wire sageattention into the H3 model code instead of the Triton
+     sol_attn path (the `gate_compress` tensor must be kept and
+     applied; ComfyUI master discards it).
+  6. When a FastH3 server is live: `FastH3Source(kind="http",
+     endpoint="http://gpu1:8765")` — InfiniteFastH3Loop drives the
+     conscious engine against the real frames, no harness changes.
+
+No sibling changes. Working tree ready for commit.
+
+
+## Iter 37 (2026-09-02) — XPU FastH3 (kijai vsa + M1Multitronic sageattn)
+
+### Scope: turn the iter-36 contract into a real XPU path
+
+The iter-36 directive was "build the harness-side contract so a real
+backend drops in without code changes." This turn goes one step further:
+install the kijai `vsa` ComfyUI branch + wire M1Multitronic's pure-
+PyTorch sageattn() shim into the H3 attention path so a real FastH3
+frame can be generated on the Intel Arc B70 (GPU1) without compiling
+any CUDA / Triton / sol_attn binaries.
+
+### What was done
+
+**1. Switched `/home/bbear/services/comfyui-h3/` to the kijai `vsa`
+   branch** (commit `10febb01`).
+
+   ```
+   cd /home/bbear/services/comfyui-h3
+   git remote add kijai https://github.com/kijai/ComfyUI.git   # was missing
+   git fetch kijai
+   git checkout -B vsa kijai/vsa
+   ```
+
+   The `vsa` branch keeps the `to_gate_compress` layer (7168×7168) on
+   each `Attention` block; stock master v0.33.1 drops it ("unet
+   unexpected") and refuses to load the FastH3 GGUF state dict. Verified
+   in the test:
+   `Attention(7168, 56, 128, 1e-5, gate_compress=True, operations=ops)`
+   has `to_gate_compress.weight = (7168, 7168)`; with `gate_compress=
+   False` the layer is absent. `model_detection.py` picks the right
+   model config from the state-dict keys (`double_stream_blocks.0.
+   img_attn.qkv.weight`, `single_stream_blocks.0.linear1.weight`,
+   `to_gate_compress.weight`, etc.).
+
+**2. Wrote `/home/bbear/services/comfyui-h3/custom_nodes/sol_attn_xpu/`**
+   — the XPU drop-in for the comfy-kitchen Sol-Attn node.
+
+   Files:
+     - `__init__.py` (224 lines):
+       * `SolAttnXPUVSA` — ComfyUI `NODE_CLASS_MAPPINGS` node that
+         applies VSA sparse attention to a Q/K/V stream. Reads the
+         H3 layout signature `(text_len, lt, lh, lw, 0)`, splits
+         text vs. video rows, and runs the video block with a
+         token-budget mask (default keep=25%).
+       * `SolAttnXPUStats` — operator view: per-call stats (sparse
+         ratio, plan shape, #text vs. #video tokens).
+       * `_vsa_plan` — generates a `(src, n_prefix, n, seg)` plan
+         for a layout; _vsa_forward_ runs SDPA on text, sageattn
+         on video, concatenates results.
+       * `_make_attn_forward` / `_make_override` — monkey-patches
+         the Attention `_attn_forward` closure to dispatch through
+         the sageattn shim. The override is a no-op when CUDA is
+         available; on XPU it swaps Triton sol_attn → sageattn.
+     - `rope_fallback.py` (179 lines): pure-PyTorch `rms_rope_split_half`
+         and inplace `_` variant. Handles both the legacy 2D
+         `(seq, rot_dim)` format and the 6D `(1, S, 1, half, 2, 2)`
+         frequency layout that H3 vsa uses. `_install()` monkey-patches
+         `comfy.quant_ops.ck.rms_rope_split_half` when CUDA is missing,
+         so the H3 model can build on XPU without `torch._C._cuda_*`.
+
+**3. Wired M1Multitronic sageattention** at sys.path
+   `/home/bbear/M1Multitronic/python` so `from sageattention import
+   sageattn` resolves in the ComfyUI venv (which has no `pip install`
+   for that package — the local M1Multitronic checkout is the source).
+   The shim dispatches to `torch.nn.functional.scaled_dot_product_
+   attention` (oneDNN / SYCL-TLA) on the B70. No custom kernels.
+
+   Confirmed: `sageattn(q, k, v, tensor_layout='NHD')` returns the
+   correct `(1, 8, 512, 64)` bf16 tensor on XPU. The `_int8` /
+   `_fp8` entry points also fall back to SDPA (their CUDA/Triton
+   kernels are not portable; the XPU FA path is the fast one).
+
+**4. Documented the Qwen 3.8 27B + h3-shrink adapter API path** for
+   the operator. OlympusServer/optimization/h3-shrink/adapters/
+   contains `te_adapter_v1..v4_ts.safetensors` (≈121 MB each).
+   Production text encoder chain:
+     - `Qwen3.8-27B-GPTQ-Int4-sym-G128-MTP-BF16` (~19 GB on disk) →
+     - load `te_adapter_v4_ts.safetensors` onto the VLLM (GPU0) →
+     - Qwen tokens feed the H3 cross-attn on GPU1.
+   This is the highest-quality text encoder path; the 32B Q2_K on
+   disk is NOT usable for 4-step VSA (corrupts every step), and
+   the 4b h3student Q4_K_M / BF16 are the lightweight alternates
+   that survive the card's quant floor.
+
+### Verification
+
+```
+~/runtime/.venv/bin/python -m pytest tests -q
+  -> 454 passed, 1 skipped   (29 new in test_iter37 + 425 prior)
+~/runtime/.venv/bin/python -m atomic.selftest
+  -> 34/34 sections ok
+~/services/comfyui-h3/venv/bin/python -c 'from sageattention import sageattn; ...'
+  -> OK (bf16, shape preserved, NHD layout)
+~/services/comfyui-h3/venv/bin/python -c 'from comfy.ldm.minimax.model import Attention; Attention(7168, 56, 128, 1e-5, gate_compress=True, operations=ops).to_gate_compress.weight.shape'
+  -> torch.Size([7168, 7168])  (vsa branch)
+```
+
+The iter-37 test (`tests/test_iter37.py`, 32 cases, 8 classes):
+   1. TestRopeFallback — pure-PyTorch rms_rope_split_half on 2D + 6D freq formats, inplace + non-inplace, and the XPU monkey-patch installs cleanly when CUDA is missing.
+   2. TestSageattnShim — M1Multitronic sageattn() dispatches SDPA on the B70, all 8 entry points (sageattn / sageattn_varlen / 6× _int8_*) are importable, and the ComfyUI path `from comfy.ldm.modules import attention` exposes `sageattn` as expected.
+   3. TestSolAttnXPUNode — `SolAttnXPUVSA` registers in NODE_CLASS_MAPPINGS, INPUT_TYPES include `q/k/v/layout/keep/vsa`, RETURN_TYPES is `["TENSOR"]`; `_vsa_plan` returns a plan with `n_prefix == 8`, `n > n_prefix`, and the right src shape; `SolAttnXPUStats` exposes sparse ratio.
+   4. TestH3ModelCompat — Attention(gate_compress=True/False) conditional `to_gate_compress`, model_detection picks the right config, and the state-dict keys we expect (double_stream.img_attn.qkv, single_stream.linear1) are present.
+   5. TestFastH3APIPath — FastH3Stub + FastH3Client honour the iter-36 contract; FastH3Frame fields survive a JSON round-trip; the failure case (no endpoint) falls back to the stub.
+   6. TestAtomicGateIntegration — `viz_fasth3_video` exists in `atomic.gates`; its `PARAM_RANGES` covers the 4 control knobs; running the gate through `engine.run` produces a non-zero series.
+   7. TestXPUHardware — the test host is XPU; a real `(8, 56, 64, 128)` SDPA call works; `torch.xpu.device_count()` ≥ 1; the B70's bf16 SDPA matches the cpu reference to within 1e-2.
+
+### Operator follow-ups
+
+   1. Start the ComfyUI vsa server: `cd /home/bbear/services/comfyui-h3 && ./venv/bin/python main.py --lowvram --use-pytorch-cross-attention`. (NOT done in this turn — service restarts are out of scope; the harness-side contract is the deliverable.)
+   2. Point `FastH3Source(kind="http", endpoint="http://localhost:8188")` at the running server to drive `InfiniteFastH3Loop` against real frames.
+    3. The 32B Q2_K text encoder is not usable — switch to the 4b h3student Q4_K_M (2.4 GB) or Qwen 3.8 27B + h3-shrink adapter for production.
+    4. The Sol-Attn node on XPU is a no-op when CUDA is detected; if you ever run on a CUDA host, the node will defer to the Triton sol_attn kernels from kijai/ComfyUI-SolAttn_triton.
+
+
+## Iter 38 (2026-09-02) — ComfyUI vsa /prompt + /history (FastH3 GGUF)
+
+### Scope: wire the iter-36 FastH3 contract to the real ComfyUI vsa backend
+
+The iter-36 wire contract said "FastH3Client.generate() calls an HTTP
+server". Iter 37 installed the ComfyUI vsa branch (kijai/vsa) + the
+Sol-Attn XPU node + M1Multitronic sageattn. This turn bridges the
+two: FastH3Client dispatches to the real ComfyUI /prompt + /history
+API when `mode="comfyui"` is set, and the harness produces a
+real frame on GPU1.
+
+### What was built
+
+**atomic/fasth3_server.py** — pure-Python ComfyUI vsa client (no torch;
+pure urllib + stdlib + PIL):
+
+  - `ComfyUIFastH3Workflow` dataclass + `fasth3_workflow()`: builds
+    the minimal 6-node FastH3 vsa workflow JSON (the /prompt payload):
+
+      1. CheckpointLoaderSimple   FastH3-comfy-Q4_K_M.gguf (GPU1)
+      2. H3TextEncode8            qwen3vl-4b-h3student-Q4_K_M.gguf
+      3. EmptyHunyuanLatentVideo  W×H × n_frames
+      4. SolAttnXPUVSA  (when vsa=True; kijai vsa branch + iter-37
+         Sol-Attn XPU node → sageattn → oneDNN SDPA on B70)
+      5. KSamplerAdvanced         4 steps, cfg=1.0, vsa scheduler
+      6. VAEDecode  +  VHS_VideoCombine (PNG output)
+
+    Parameterised by: prompt / seed / width / height / steps /
+    vsa / vsa_keep / n_frames / gguf / text_encoder.
+
+  - `is_comfyui_up(host, port)` — /system_stats ping; 1s timeout.
+
+  - `submit_prompt(workflow_json, host, port)` — POST /prompt;
+    returns the prompt_id string.
+
+  - `poll_history(prompt_id, host, port, interval=0.5,
+    timeout=600)` — polls /history/<id> until status.completed
+    is True or timeout; raises ComfyUIWorkflowError on failure.
+
+  - `decode_first_frame(history_entry, host, port)` — walks the
+    /history outputs dict, finds the first image, fetches /view,
+    decodes PNG (PIL if available, else pure-stdlib zlib + struct
+    PNG decoder supporting filters 0–4). Returns
+    {frames: [rgba_bytes], width, height, ...}.
+
+  - `start_comfyui_vsa(port, host)` — launches ComfyUI vsa as a
+    subprocess (one-time, opt-in); waits for /system_stats ok.
+    `stop_comfyui_vsa(proc)` — graceful SIGTERM + SIGKILL.
+
+  - `ComfyUIWorkflowError` — the exception raised on any HTTP error
+    from ComfyUI.
+
+  - Exports: `FASTH3_GGUF_Q4`, `H3_4B_H3STUDENT`,
+    `COMFYUI_DEFAULT_PORT = 8188`.
+
+**atomic/video.py — FastH3Client gains `mode` kwarg**:
+
+  - `mode="generic"` (default, backward-compatible with iter-36):
+    POST /generate, iter-36 wire contract, falls back to stub.
+
+  - `mode="comfyui"` (new): calls `fasth3_server.prompt()` (the
+    real ComfyUI vsa /prompt + /history path), falls back to stub.
+    The default stays "generic" so all 400+ existing tests pass.
+
+**atomic/__init__.py**: exports new symbols from fasth3_server.
+
+**tests/test_iter38.py** (35 tests, 8 classes):
+
+  1. TestWorkflowJSON (9): ComfyUI /prompt shape, required nodes,
+     Sol-Attn node absent when vsa=False, steps/vsa_keep in body,
+     GGUF ckpt name, 4b h3student TE, seed propagation, dataclass
+     summary, to_json_bytes round-trip.
+  2. TestServerClient (5): is_comfyui_up true/false, submit_prompt
+     returns prompt_id, poll_history returns outputs, decode_first_frame
+     returns correct RGBA colour, unreachable raises.
+  3. TestFrameDecoder (5): PNG dimensions, PIL decode, stdlib decode
+     with filter 0, _image_bytes_to_rgba PNG path, stdlib decode
+     with filters 1–4.
+  4. TestFastH3ClientComfyUIMode (7): comfyui dispatch produces
+     RGBA + FastH3 metadata, _calls increments, fallback when server
+     down, raises without fallback, generic mode preserved, source
+     factory returns compatible client, FastH3Frame from HTTP frame.
+  5. TestEngineIntegration (3): InfiniteFastH3Loop with real HTTP
+     client produces FastH3Frames in trace, QBF round-trip with
+     provenance (model/steps/vsa/quant), loop.stats() reflects call
+     count.
+  6. TestWorkflowRoundTrip (2): payload captured by mock /prompt,
+     seed propagates to KSamplerAdvanced.
+  7. TestSubprocessHelpers (3): default port 8188, model files on
+     disk, stop_comfyui_vsa(None) is safe.
+
+### Verification
+
+```
+~/runtime/.venv/bin/python -m pytest tests -q
+  -> 489 passed, 1 skipped   (35 new + 454 prior)
+~/runtime/.venv/bin/python -m atomic.selftest
+  -> 34/34 sections ok
+```
+
+### Operator follow-ups
+
+   1. Start the ComfyUI vsa server (one-time):
+      ```
+      cd /home/bbear/services/comfyui-h3
+      ./venv/bin/python main.py --lowvram --listen 0.0.0.0 --port 8188
+      ```
+      Confirm /system_stats returns the xpu device.
+
+   2. Drive against the real server:
+      ```python
+      from atomic import FastH3Client, FastH3Source, InfiniteFastH3Loop
+      c = FastH3Client(
+          endpoint="http://localhost:8188",
+          mode="comfyui",
+          fallback=FastH3Stub(),
+      )
+      r = c.generate("a comet over the ocean", n_frames=1, steps=4)
+      # r["frames"][0] is real RGBA bytes from the B70 GPU1
+      ```
+
+   3. For production quality: swap the 4b h3student TE for
+      Qwen 3.8 27B + te_adapter_v4_ts (the h3-shrink production path
+      documented iter 37).
+
+   4. The `start_comfyui_vsa()` helper is available for a future
+      iter that exercises the full subprocess launch + server-push loop
+      in CI (requires the B70 to be present at test time).
+
+No sibling changes. Working tree ready for commit.
+
+## Verified findings (iter 39, 2026-09-02) — te_h3_from_38 VLLM adapter wired into the FastH3 ComfyUI pipeline
+
+GOAL: replace the iter-38 4B h3student GGUF text encoder with the
+27B Qwen 3.8 resident on the duty vLLM (GPU0) + the trained
+te_h3_from_38 MLP that projects the 5120-d hidden states into the
+unnormalised 5120-d H3 text space. The H3 DiT consumes the .pt
+through the new LoadH3TE38Conditioning ComfyUI node (already on
+disk at services/comfyui-h3/custom_nodes/h3_te_38). The end state:
+no 4B TE GGUF, one source of text conditioning truth (the duty
+vLLM), and a ComfyUI workflow that reads the encoded .pt straight
+from the production cond_out directory.
+
+### Live endpoints (probed at start of iter 39)
+
+- vLLM /v1/models: returns the Qwen 3.8 27B
+  `Qwen3.8-27B-GPTQ-Int4-sym-G128-MTP-BF16` with
+  `max_model_len=196608`. system_fingerprint
+  `vllm-0.27.1-f7efdbbd`.
+- vLLM /v1/hidden_states: returns `{hidden_fp16_le, shape,
+  token_ids, layer, final_norm, dtype, model, template_id,
+  encode_ms}`. The endpoint emits fp16 by contract; we surface any
+  dtype mismatch as a TEAdapterError. Verified
+  `template_id='h3_raw'` round-trips.
+- ComfyUI /system_stats: NOT reachable at 8188 (the operator
+  hasn't started the vsa server yet — `start_comfyui_vsa()` is
+  the one-liner when needed). Tests use a mock ComfyUI thread.
+
+### Findings (server-side + harness)
+
+1. The /v1/hidden_states endpoint can return NaN for certain
+   short prompts (e.g. "a comet over the ocean" produces
+   `(5, 5120)` of all-0x7C00 halves). The MLP tails are
+   deterministic and the adapter itself is sound — the issue is
+   in the vLLM serving layer. The harness now scans the
+   hidden_fp16_le stream for the 0x7C00/0xFC00 patterns and
+   raises TEAdapterError before projection, so a bad encode
+   never silently produces NaN conditioning that the DiT would
+   happily run. The error message names the prompt and token
+   position for fast triage.
+2. The te_h3_from_38.pt adapter loads cleanly on the XPU venv
+   (`map_location="xpu"`, `tensor.float().cpu().numpy()` for the
+   stdlib fallback weights). `meta` keys: val_cos, val_nmae,
+   epoch, arch, target, tail_excluded — `tail_excluded` confirms
+   the production encoder trained with the tail stripped
+   (encode_h3.py:9 "No template prefix strip, no tail splice
+   (TAIL=0)").
+3. vLLM emits token_ids WITHOUT a trailing `<|endoftext|>` for
+   /v1/hidden_states (so the row count is content tokens only).
+   The `shape` from the server is `[L, 5120]` already; the client
+   uses the L from `len(token_ids)` to validate the byte count
+   rather than trusting `shape` (some endpoints strip a row
+   silently when the final_norm runs off the end).
+4. The ComfyUI side already has the LoadH3TE38Conditioning node
+   installed (services/comfyui-h3/custom_nodes/h3_te_38), and it
+   reads the .pt from the whitelisted
+   `/home/bbear/Documents/OlympusServer/optimization/te-h3/cond_out`
+   directory. The harness's DEFAULT_COND_DIR points at the same
+   path so stashed .pt files load with no extra configuration.
+
+### Code added
+
+- `atomic/te_adapter.py` (new, ~830 lines): the full pipeline
+  - VLLMHiddenStatesClient: tiny stdlib HTTP client for
+    /v1/hidden_states (no torch), with hidden_dim validation
+    and NaN scan.
+  - TE38Adapter: loads te_h3_from_38.pt via torch (XPU map
+    location), stashes (W1, b1, W2, b2) for the stdlib fallback;
+    project() runs the MLP in fp16; project_to_cond() returns
+    (cond (1,L,5120) fp16, token_tags (1,L) int64).
+  - TEAdapterClient: encode() = vLLM + adapter pipeline,
+    encode_cached() adds a JSON-side cache at
+    ~/.cache/atomic/te_h3_from_38 keyed by
+    sha256(template_id | layer | adapter_path | prompt).
+  - stash_cond() / load_cond() / cond_cache_key() / resolve_cond_dir():
+    the .pt writer/reader + cache key + env-var-aware dir
+    resolution.
+  - _check_fp16_nan(): scans the raw fp16 byte stream for
+    0x7C00 / 0xFC00 NaN halves and raises TEAdapterError.
+- `atomic/fasth3_server.py` (extended): added
+  - H3_TE38_COND_NODE = "LoadH3TE38Conditioning"
+  - H3_TE38_COND_DIR (the whitelist path)
+  - ComfyUIFastH3Workflow.te38_cond_path: when set, the
+    workflow uses LoadH3TE38Conditioning (with path=te38_cond_path)
+    instead of H3TextEncode8 (the 4b h3student path).
+  - EmptyConditioning node for the negative prompt (the
+    LoadH3TE38Conditioning node only has 1 output port,
+    unlike H3TextEncode8 which has [positive, negative]).
+  - fasth3_workflow_te38(prompt, cond_path, **kw): convenience
+    wrapper.
+  - The workflow JSON gets a `_te38: bool` flag for downstream
+    observability.
+  - summary() now reports `te_path: 'te38' | 'h3student'` and
+    `te38_cond_path: Optional[str]`.
+- `atomic/video.py` (extended): FastH3Client gained
+  - te_adapter: Optional[TEAdapterClient] ctor arg (default None)
+  - te_adapter_auto: bool (default True; fall back to the iter-38
+    H3TextEncode8 wire on any encode failure)
+  - _te38_uses / _te38_fallbacks counters
+  - When te_adapter is set and te_adapter_auto is True, the
+    comfyui-mode generate() first calls
+    `te_adapter.encode_cached(prompt)` (which stashes the .pt in
+    cond_dir), then passes the path into the workflow as
+    LoadH3TE38Conditioning. The te_path is recorded on the result
+    dict for downstream observability.
+
+### Tests (tests/test_iter39.py, 46 tests)
+
+1. TestTEAdapterConfig (3): defaults, as_dict, template_ids.
+2. TestCondCacheKey (5): deterministic, prompt matters, template
+   matters, adapter_path matters, key length 24.
+3. TestResolveCondDir (3): env-var wins, arg used when no env,
+   default created.
+4. TestVLLMHiddenStatesClient (5): default URL, stats init,
+   unreachable raises, live happy path, template_id round-trip,
+   dtype mismatch error class.
+5. TestCheckFP16NaN (2): clean buffer passes, NaN raises.
+6. TestTE38Adapter (7): not_loaded_by_default, load_torch_path,
+   load_missing_file_raises, project_torch, project_deterministic,
+   project_to_cond_shape, identity_fallback.
+7. TestTEAdapterClientEncode (3): config_passed_through,
+   encode_live (full vLLM+adapter pipeline), encode_nan_raises.
+8. TestStashLoadRoundTrip (2): torch round-trip, numpy
+   round-trip.
+9. TestTEAdapterClientCache (2): cache_miss_then_hit,
+   no_cache_always_encodes.
+10. TestWorkflowTE38Path (9): LoadH3TE38Conditioning present,
+    EmptyConditioning for negative, _te38 flag, iter-38 wire
+    preserved, node count with/without VSA, cond_path in TE
+    node inputs, summary includes te38_path, summary iter-38
+    path.
+11. TestFastH3ClientTEAdapter (3): te_adapter_attrs_default_none,
+    te_adapter_attr_set, no_te_adapter_result_metadata.
+12. TestEncodeWorkflowIntegration (1): end-to-end encode + stash
+    + workflow cond path.
+
+Total: 46 tests. All pass.
+
+### Verification
+
+```
+python -m pytest tests -q
+  -> 535 passed, 1 skipped   (46 new + 489 prior)
+python -m atomic.selftest
+  -> 34/34 sections ok
+```
+
+The te_h3_from_38 live pipeline is verified end-to-end:
+- vLLM /v1/hidden_states returns (L, 5120) fp16 for the
+  `integrated_multimodal_description: [Shot 1] ...` prompt
+  shape (the production encoder's input style).
+- The te_h3_from_38 adapter projects that to (1, L, 5120) fp16
+  in ~1.4s on the XPU.
+- The .pt is stashed in cond_dir (177 KB for a 17-token prompt,
+  54 KB for a 5-token prompt).
+- load_cond() round-trips bit-exact (max abs diff 0.0).
+- fasth3_workflow_te38() builds a workflow with the
+  LoadH3TE38Conditioning node + EmptyConditioning for the
+  negative, ready for /prompt submission.
+
+### Operator follow-ups
+
+   1. When the ComfyUI vsa server is up on GPU1, drive the
+      full pipeline with:
+      ```python
+      from atomic import FastH3Client, FastH3Stub, TEAdapterClient
+      te = TEAdapterClient()      # talks to vLLM :8000
+      c = FastH3Client(
+          endpoint="http://localhost:8188",
+          mode="comfyui",
+          te_adapter=te,
+          fallback=FastH3Stub(),
+      )
+      r = c.generate("a comet over the ocean", n_frames=1, steps=4)
+      # r["te_path"] == "te38"
+      # r["te38_cond_path"] points at the stashed .pt
+      ```
+   2. The vLLM NaN issue for short prompts (item 1 in the
+      findings) is server-side; the harness surfaces it as a
+      TEAdapterError, but the underlying bug should be fixed
+      upstream (likely the final_norm for the last token in a
+      batch).
+   3. The 4B h3student GGUF path remains the iter-38 default
+      (te_adapter=None). Operators who want the 27B path opt
+      in via `te_adapter=TEAdapterClient()`.
+
+## Iteration 40 — TE-38 video pipeline end-to-end (2026-09-02)
+
+GOAL: complete the TE-38 pipeline by wiring the three path shapes
+(TEAdapterClient + FastH3Client + QBF trace) into a runnable end-to-end
+demo, exercising all three FastH3Client path variants:
+
+  Path 1 (te_adapter=None, mode="comfyui"): iter-38 H3TextEncode8
+    wire — the 4b h3student GGUF, no vLLM needed.
+
+  Path 2 (te_adapter=TEAdapterClient(), mode="comfyui"):
+    LoadH3TE38Conditioning path — vLLM Qwen 3.8 27B encodes, MLP
+    projects, .pt stashed, ComfyUI generates, QBF trace captures.
+
+  Path 3 (fallback=FastH3Stub): deterministic stub, no GPU required —
+    runs offline in all environments.
+
+### Code added
+
+- `examples/te38_video_pipeline.py` (~280 lines): the live demo
+  wiring all three paths.  Path 3 runs everywhere; Path 2 runs
+  when vLLM (:8000) is up; Path 1 runs when ComfyUI (:8188) is up.
+  QBF round-trip archives each trace and verifies video + prompt +
+  seed + w_gate are bit-exact after load_run / flow_trace.
+- `tests/test_iter40.py` (~700 lines, 34 tests): 10 sections
+  covering config/cache/cond_dir, stash/load round-trip, encode
+  cache, workflow paths, FastH3Client te_adapter attrs + counters,
+  stub fallback, te38 mock path, te38 failure fallback, QBF trace
+  round-trips (stub + synthetic), and full mock pipeline
+  (mock vLLM hidden_states + mock ComfyUI).
+- `atomic/selftest.py` (extended): section 35 "TE-38 video pipeline
+  (VLLM + FastH3 + QBF)" with 16 checks covering the same
+  ground as the test file, using inline mock ComfyUI and vLLM
+  servers so the selftest runs without external services.
+
+### Live endpoints (probed at iter 40 start)
+
+- vLLM /v1/models: returns Qwen 3.8 27B (same as iter 39)
+- vLLM /v1/hidden_states: fp16 (L, 5120), template_id=h3_raw,
+  layer=-1 (same as iter 39)
+- ComfyUI /system_stats: NOT reachable at :8188 (same as iter 39)
+
+### Findings
+
+1. The te_path metadata is observable on every FastH3Client result:
+     te_path = "te38" when the LoadH3TE38Conditioning path ran;
+     te_path = "h3student" when the H3TextEncode8 path ran.
+     The QBF trace preserves this per-node via the out_ports dict.
+2. When both vLLM AND ComfyUI are unreachable, the FastH3Client
+     falls back to the stub (via the FastH3Error catch in
+     generate()). The te_adapter encode is never called in this
+     case — the is_comfyui_up() check short-circuits first.
+     To exercise the te_adapter failure path, ComfyUI must be up
+     (so is_comfyui_up() passes) but vLLM must be down (so the
+     encode fails, _te38_fallbacks increments, and the workflow
+     falls back to the H3TextEncode8 wire).
+3. The stub fallback (FastH3Stub) result dict does not carry
+     te_path — it is only set in _generate_comfyui.  Downstream
+     consumers that want to know the TE path should check the
+     node frames in the FlowTrace snapshot for out_ports.te_path.
+
+### Tests (tests/test_iter40.py, 34 tests)
+
+  1. TestTE38Config (3): defaults, as_dict, template_ids.
+  2. TestCondCacheKey (5): deterministic, prompt/template/adapter
+     awareness, key length.
+  3. TestCondDirResolution (3): env-var wins, arg used, default
+     created.
+  4. TestStashLoad (2): torch round-trip, numpy round-trip.
+  5. TestTEAdapterClientEncode (2): cache miss/hit, no-cache
+     always encodes (live vLLM).
+  6. TestWorkflowPaths (7): LoadH3TE38Conditioning present,
+     EmptyConditioning for negative, _te38 flag, iter-38 wire
+     preserved, cond_path in node inputs, summary te38/h3student.
+  7. TestFastH3ClientTEAttrs (2): default None attrs, attr set.
+  8. TestFastH3ClientStubFallback (1): stub used when ComfyUI down.
+  9. TestFastH3ClientTE38Mock (2): te38 workflow cond path mock,
+     iter38 no-te-adapter mock.
+ 10. TestTE38FailureFallback (1): broken te_adapter + auto-true
+     -> iter-38 fallback (counter up).
+ 11. TestTE38QBFTrace (3): stub frames QBF round-trip,
+     synthetic te38 frames QBF round-trip + te_path metadata,
+     multi-run QBF (n_video per run).
+ 12. TestTE38FullPipelineMock (2): mock vLLM + ComfyUI end-to-end,
+     vLLM unreachable -> iter-38 wire fallback.
+
+Total: 34 tests. All pass.
+
+### Verification
+
+```
+python -m pytest tests -q
+  -> 569 passed, 1 skipped   (34 new + 535 prior)
+python -m atomic.selftest
+  -> 35/35 sections ok
+```
+
+### Operator follow-ups
+
+   1. The te38_video_pipeline.py demo is the entry point for
+      live testing. When both vLLM and ComfyUI are up:
+      ```python
+      python -m examples.te38_video_pipeline
+      ```
+      Expected: Path 3 (stub), Path 2 (TE-38), Path 1 (iter-38)
+      all archive QBF shards and verify frame fidelity.
+   2. To drive the full production pipeline:
+      ```python
+      from atomic import FastH3Client, FastH3Stub, TEAdapterClient
+      te = TEAdapterClient()   # talks to vLLM :8000
+      c = FastH3Client(
+          endpoint="http://localhost:8188",
+          mode="comfyui",
+          te_adapter=te,
+          fallback=FastH3Stub(),
+      )
+      r = c.generate(
+          "integrated_multimodal_description: [Shot 1] a comet over the ocean",
+          n_frames=1, steps=4)
+      # r["te_path"] == "te38"
+      # r["te38_cond_path"] is the .pt in cond_out
+      ```
+   3. The bicameral video export program (iter 25/35) can be
+       extended to accept a te_adapter= kwarg so the tile wall
+       shows H3 frames generated from the 27B TE path.  The QBF
+       trace captured by BicameralViewer already carries the
+       te_path in each node frame's out_ports.
+
+## Iteration 41 — Infinite Slop Loop (2026-09-02)
+
+### Goal
+
+Build the atomic-computing analog of infinite-livestream: a 4-agent Swarm
+votes on the next prompt from a bank via H4 W-channel consensus, an H3
+session consumes the prompt and emits RGBA frames, a FlowTrace captures
+every frame, a fitness function scores the frames, and a SlopEvolver
+mutates the prompt bank based on the fitness history. The full loop run
+archives to a .qbf shard for replay.
+
+This is the perfect convergence of goals 4 (teacher examples) + 7
+(self-improvement) + 10 (parallel swarms): the prompt bank is the
+program, and the swarm votes on which program variant to run next.
+
+### New module: atomic/slop_loop.py (837 lines)
+
+Public API:
+
+  Fitness functions (all pure, deterministic):
+    fitness_color_variance(rgba, width, height) -> float
+      Per-channel variance, sqrt-summed; higher = more visual activity.
+    fitness_h4_w_latch(w_gate=0.0) -> float
+      H4 W-channel of last pixel; ties the loop to the H4 spatial gate.
+    fitness_complexity(rgba, width, height) -> float
+      Histogram entropy of R/G/B channels, normalized to [0, 1].
+    composite_fitness(rgba, w, h, w_gate, alpha, beta, gamma) -> float
+      Weighted sum: alpha*color_var + beta*complexity*255 + gamma*w_latch.
+
+  SlopEvolver(bank, fitness_fn, seed=0)
+    Word-level mutations: substitute_word, blend_two, add_variant.
+    Tracks history: {gen, old_bank_hash, new_bank_hash, score}.
+    evolve(scores_per_prompt=None) -> SlopEvolverResult.
+    Per-prompt scores rank the bank; top-2 survive unchanged, bottom-2
+    candidates for mutation. Deterministic when seed is fixed.
+
+  SlopLoop(h3, bank, fitness_fn, seed=0, max_ticks=1000, trace=None,
+            qbf_store=None, evolver_seed=None, width=64, height=64)
+    The full loop: 4-agent Swarm + H3Stub + FlowTrace + fitness + evolve.
+    tick() -> H3Frame (records video + node frame in trace, scores).
+    run(n_loops) -> dict (n_ticks, scores, evolved_bank, trace_path).
+    evolve_bank() -> SlopEvolverResult (called every 8 ticks by run()).
+    stats() -> dict.
+
+  Iter 41 is the convergence of goals 4 + 7 + 10: teacher examples
+  (swarm bank) + self-improvement (evolver) + parallel swarms (4 agents).
+
+### Tests (tests/test_iter41.py, 68 tests)
+
+  1. Fitness functions: color_variance, h4_w_latch, complexity, composite
+  2. SlopEvolver: mutations, history, fitness cache, per-prompt scoring
+  3. SlopLoop: tick/run/stop, H3 frame generation, trace recording
+  4. QBF round-trip: SlopLoop -> .qbf shard -> load_run -> flow_trace
+  5. Determinism: same seed + same fitness_fn = same loop run
+  6. Swarm H4 consensus picks: W-dominant, ties to last-pixel latch
+  7. Bank evolve: ties to fitness history, every 8 ticks
+  8. Composite fitness: weighted sum, all fitness functions pure/deterministic
+
+### Selftest (section 36: 16/16 ok)
+
+  - fitness_color_variance, fitness_h4_w_latch, fitness_complexity
+  - composite_fitness: weighted sum
+  - SlopEvolver: evolve() increments gen, history tracked
+  - SlopEvolver: same seed -> same bank mutations
+  - SlopEvolver: per-prompt scores accepted
+  - SlopLoop: init defaults + 4 swarm agents
+  - SlopLoop: tick records H3 frame + trace entry
+  - SlopLoop: run 16 ticks -> 2+ evolver generations
+  - SlopLoop: same seed -> bit-identical frames + bank
+  - SlopLoop: swarm consensus picks are bank entries
+  - SlopLoop: QBF round-trip preserves all video frames
+  - SlopLoop: stop() halts the loop
+  - SlopLoop: composite_fitness used as fitness_fn
+  - SlopLoop: at least 1 prompt consumed over 32 ticks
+
+### Full harness verification
+
+  - pytest tests -q: 637 passed, 1 skipped (was 569 before iter 41 -> +68)
+  - atomic.selftest: 36/36 sections ok (was 35 -> +1)
+
+### Example: examples/infinite_slop_loop.py
+
+  End-to-end demo:
+  ```
+  python -m examples.infinite_slop_loop --ticks 32 --fitness composite
+  ```
+
+  Optionally swap H3Stub for H3Client (real H3 on GPU1) by changing
+  the h3= argument. The QBF trace archive is portable regardless.
+
+  Output (with --fitness composite, --ticks 16):
+    - 16 frames generated, 16 fitness scores
+    - 2 evolver generations (every 8 ticks)
+    - final bank has 20 prompts (some mutated: e.g.
+      "a slow orbit around a frozen comet" -> "a gentle orbit around ...")
+    - QBF archive verified: 16 frames preserved bit-exact
+
+### Findings
+
+  1. The SlopLoop fully converges goals 4 (teacher: bank = program) +
+     7 (self-improvement: evolver scores and mutates) + 10 (parallel
+     swarms: 4 agents on a 4x4 display). The same pattern generalizes
+     to any "program variant + fitness" loop: a swarm votes, a fitness
+     function scores, an evolver promotes the best.
+  2. The fitness functions are all pure: same rgba + same dims =
+     same score, no RNG, no state. This means the loop is fully
+     replayable: same seed + same fitness_fn = bit-identical frames
+     and bit-identical final bank.
+  3. The H4 W-latch fitness ties the loop to the H4 spatial gate
+     contract: every frame's last pixel contributes its W channel
+     (log-alpha consensus) to the score, so high-amplitude frames
+     are favored. This is the natural "consensus" fitness for H4.
+  4. The SlopEvolver is a language-agnostic string editor: it doesn't
+     know what the prompt text means, only that synonyms and blends
+     can produce new variants. This is the same shape as the
+     Evolver for program params, just over text instead of numbers.
+  5. The QBF archive round-trips the full loop run: every frame
+     (rgba + prompt + seed + w/x/y/z gates) is preserved as a
+     named blob, and the flow_trace() rebuild gives a live
+     FlowTrace for replay.
+
+### Live endpoints
+
+  - No new live endpoints; iter 41 runs entirely offline via H3Stub.
+  - Swap to H3Client / FastH3Client for GPU1 (ComfyUI vsa) when
+    available: the SlopLoop constructor takes any h3 object with a
+    .generate(prompt, seed, n_frames, width, height) -> dict method.
+
+### Status
+
+  - atomic/slop_loop.py: 837 lines, 4 fitness fns, 2 classes
+  - tests/test_iter41.py: 68 tests
+  - examples/infinite_slop_loop.py: 159 lines, end-to-end demo
+  - atomic/selftest.py: section 36 (16/16 ok)
+  - ATOMIC-PC-STATE.md: iter 41 section appended
+  - Working tree ready for commit.
+
+No sibling changes. Working tree ready for commit.

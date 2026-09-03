@@ -754,6 +754,237 @@ ATOMS["viz_video"] = Atom(
     init=_vv_init, tick=_vv_tick)
 
 
+# -- viz_video_h3: polls H3InferenceServer per tick (iter 31) ----------------------
+# Same H4 RGBA decoder as viz_video but fetches the frame from the H3 server
+# rather than reading it from the bus. Enables the atomic engine to drive the
+# tile wall live from a running H3InferenceServer without an external feed.
+#
+# Pipeline: H3InferenceServer (localhost:8765) -> viz_video_h3 tick ->
+#   bus[<id>.rgba] -> renderer -> tile wall
+#
+# Params: server_url, width, height, prompt, n_frames, timeout_s, enabled
+
+def _vv3_init(n):
+    n.set_var("w_latch", 0.0)
+    n.set_var("x_latch", 0.0)
+    n.set_var("y_latch", 0.0)
+    n.set_var("z_latch", 0.0)
+    n.set_var("error", 0.0)
+
+
+def _vv3_tick(n):
+    import math as _m
+    import base64 as _b64
+    import json as _json
+    import urllib.error as _ue
+    import urllib.request as _ur
+    from .qbf import h4_gate
+
+    enabled = float(n.params.get("enabled", 1.0))
+    if enabled <= 0.5:
+        n.set_var("ready", 0.0)
+        n.output("ready", 0.0)
+        return
+
+    server_url = str(n.params.get("server_url", "http://localhost:8765"))
+    width = int(n.params.get("width", 64))
+    height = int(n.params.get("height", 64))
+    prompt = str(n.params.get("prompt", ""))
+    n_frames = int(n.params.get("n_frames", 1))
+    timeout_s = float(n.params.get("timeout_s", 5.0))
+    max_retries = int(n.params.get("max_retries", 3))
+
+    ready = 0.0
+    n.set_var("error", 0.0)
+
+    payload = {
+        "prompt": prompt,
+        "n_frames": n_frames,
+        "width": width,
+        "height": height,
+        "steps": 4,
+    }
+    if "seed" in n.params:
+        payload["seed"] = int(n.params["seed"])
+    body = _json.dumps(payload).encode("utf-8")
+    req = _ur.Request(
+        server_url + "/generate",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    rgba = None
+    for attempt in range(max_retries):
+        try:
+            with _ur.urlopen(req, timeout=timeout_s) as resp:
+                r = _json.loads(resp.read().decode("utf-8"))
+            frames_b64 = r.get("frames_b64", [])
+            if frames_b64:
+                rgba = _b64.b64decode(frames_b64[0])
+            break
+        except (_ue.URLError, _ue.HTTPError, OSError, TimeoutError):
+            n.set_var("error", 1.0)
+            if attempt == max_retries - 1:
+                n.set_var("ready", 0.0)
+                n.output("ready", 0.0)
+                return
+
+    if rgba is None or len(rgba) < 4:
+        n.set_var("ready", 0.0)
+        n.output("ready", 0.0)
+        return
+
+    n.bus.set(n.id + ".rgba", rgba)
+
+    n_pixels = len(rgba) // 4
+    decoded = bytearray(n_pixels * 4)
+    last_w = 0.0
+    last_x = 0.0
+    last_y = 0.0
+    last_z = 0.0
+    for i in range(n_pixels):
+        j = i * 4
+        a_raw = rgba[j + 3]
+        r_raw = rgba[j]
+        g_raw = rgba[j + 1]
+        b_raw = rgba[j + 2]
+        a_log = _m.log(max(1, a_raw))
+        w_row, z_row, y_row, x_row = h4_gate(
+            (a_log, float(b_raw), float(g_raw), float(r_raw)))
+        decoded[j] = max(0, min(255, int(round(x_row))))
+        decoded[j + 1] = max(0, min(255, int(round(y_row))))
+        decoded[j + 2] = max(0, min(255, int(round(z_row))))
+        decoded[j + 3] = a_raw
+        last_w, last_x, last_y, last_z = w_row, x_row, y_row, z_row
+
+    n.bus.set(n.id + ".rgba_decoded", bytes(decoded))
+    n.set_var("w_latch", last_w)
+    n.set_var("x_latch", last_x)
+    n.set_var("y_latch", last_y)
+    n.set_var("z_latch", last_z)
+    ready = 1.0
+    n.set_var("ready", ready)
+    n.output("w", last_w)
+    n.output("x", last_x)
+    n.output("y", last_y)
+    n.output("z", last_z)
+    n.output("ready", ready)
+
+
+ATOMS["viz_video_h3"] = Atom(
+    "viz_video_h3",
+    "H3 video source (polls H3InferenceServer per tick)",
+    "source",
+    {"server_url": "http://localhost:8765",
+     "width": 64, "height": 64,
+     "prompt": "",
+     "n_frames": 1,
+     "timeout_s": 5.0,
+     "max_retries": 3,
+     "enabled": 1.0},
+    [],
+    ["ready", "w", "x", "y", "z"],
+    "@init\n",
+    init=_vv3_init, tick=_vv3_tick)
+
+
+# -- viz_fasth3_video: FastH3 (4-step VSA) frame sink (iter 36) ------------
+# Identical wire contract to viz_video: reads the per-tick RGBA frame from
+# the bus key <id>.frame (set by FastH3Session / InfiniteFastH3Loop via
+# HostBridge.push_frame) and decodes the per-pixel H(4) gate so the W/X/Y/Z
+# channels are exposed as scalar outputs. The renderer (static/index.html)
+# is the same — viz_fasth3_video is the FastH3-aware twin of viz_video.
+#
+# Why a separate atom (and not just a parameter on viz_video)?
+#   * Atomic / pure-function rule: the bus key namespace is <id>.frame
+#     and the per-atom outputs are decoupled; a viz_video_h3 that read
+#     the FastH3-specific bridge metadata would need a new probe code path.
+#   * QBF provenance: an InfiniteFastH3Loop step records the atom type
+#     "viz_fasth3_video" so a QBF trace can be filtered by back-end.
+#   * UI: a future FastH3-aware UI can show steps/vsa/quant beside the
+#     frame without confusing H3 traces.
+# Output ports: ready, w, x, y, z (same as viz_video).
+# Params: capture (default 1.0), steps (default 4), vsa (default 1),
+# vsa_keep (default 10), quant (default "Q5_K_M"). The params do NOT
+# affect the H(4) decode — they're metadata the renderer can surface.
+
+def _vfh_init(n):
+    n.set_var("prev_gate", 0.0)
+    n.set_var("w_latch", 0.0)
+    n.set_var("x_latch", 0.0)
+    n.set_var("y_latch", 0.0)
+    n.set_var("z_latch", 0.0)
+    n.set_var("frames_decoded", 0.0)
+
+
+def _vfh_tick(n):
+    import math as _m
+    from .qbf import h4_gate
+    gate = n.input("cv")
+    n.set_var("gate", gate)
+    ready = 0.0
+    frame = n.bus.get(n.id + ".frame")
+    if frame is not None and hasattr(frame, "__bytes__"):
+        rgba = bytes(frame)
+        n.bus.set(n.id + ".rgba", rgba)
+        n_pixels = len(rgba) // 4
+        decoded = bytearray(n_pixels * 4)
+        last_w = 0.0
+        last_x = 0.0
+        last_y = 0.0
+        last_z = 0.0
+        for i in range(n_pixels):
+            j = i * 4
+            a_raw = rgba[j + 3]
+            r_raw = rgba[j]
+            g_raw = rgba[j + 1]
+            b_raw = rgba[j + 2]
+            a_log = _m.log(max(1, a_raw))
+            w_row, z_row, y_row, x_row = h4_gate(
+                (a_log, float(b_raw), float(g_raw), float(r_raw)))
+            decoded[j] = max(0, min(255, int(round(x_row))))
+            decoded[j + 1] = max(0, min(255, int(round(y_row))))
+            decoded[j + 2] = max(0, min(255, int(round(z_row))))
+            decoded[j + 3] = a_raw
+            last_w, last_x, last_y, last_z = w_row, x_row, y_row, z_row
+        n.bus.set(n.id + ".rgba_decoded", bytes(decoded))
+        n.set_var("w_latch", last_w)
+        n.set_var("x_latch", last_x)
+        n.set_var("y_latch", last_y)
+        n.set_var("z_latch", last_z)
+        n.output("w", last_w)
+        n.output("x", last_x)
+        n.output("y", last_y)
+        n.output("z", last_z)
+        ready = 1.0
+        frames_decoded = n.read("frames_decoded")
+        n.set_var("frames_decoded", frames_decoded + 1.0)
+    n.set_var("ready", ready)
+    n.output("ready", ready)
+
+
+ATOMS["viz_fasth3_video"] = Atom(
+    "viz_fasth3_video",
+    "FastH3 video sink (4-step VSA, per-tick RGBA -> H4 RGBA log/linear)",
+    "sink",
+    {"capture": 1.0, "steps": 4, "vsa": 1.0, "vsa_keep": 10,
+     "quant": "Q5_K_M"},
+    ["in"],
+    ["ready", "w", "x", "y", "z"],
+    "@init\ncapture = 1; steps = 4; vsa = 1; vsa_keep = 10;\n"
+    "quant = 'Q5_K_M';\n"
+    "@tick\nready = 0;\n"
+    "if (capture > 0.5) {\n"
+    "  f = input('frame');\n"
+    "  if (isdefined(f)) {\n"
+    "    output('ready', 1);\n"
+    "    ready = 1;\n"
+    "  }\n"
+    "}",
+    init=_vfh_init, tick=_vfh_tick)
+
+
 # -- viz_heatmap: per-tile heatmap sink (iter 3) --------------------------------
 # The renderer (static/index.html) reads bus[<id>.hm] (a 0..1 intensity
 # per tile slot, written by the heatmap atom itself) and draws the
@@ -894,6 +1125,14 @@ PARAM_RANGES: dict[tuple[str, str], tuple[float, float, float, str]] = {
     ("toffoli", "lo"):          (0.0, 1.0, 1.0, ""),
     ("toffoli", "hi"):          (0.0, 1.0, 1.0, ""),
     ("viz_video", "capture"):   (0.0, 1.0, 1.0, ""),
+    ("viz_video_h3", "width"):  (8, 1024, 8, "px"),
+    ("viz_video_h3", "height"): (8, 1024, 8, "px"),
+    ("viz_video_h3", "timeout_s"): (0.5, 30.0, 0.5, "s"),
+    ("viz_video_h3", "enabled"): (0.0, 1.0, 1.0, ""),
+    ("viz_fasth3_video", "capture"): (0.0, 1.0, 1.0, ""),
+    ("viz_fasth3_video", "steps"): (1, 8, 1, "steps"),
+    ("viz_fasth3_video", "vsa"): (0.0, 1.0, 1.0, ""),
+    ("viz_fasth3_video", "vsa_keep"): (1, 100, 1, "%"),
 }
 
 

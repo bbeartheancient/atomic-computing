@@ -188,6 +188,7 @@ class JFinExporter:
         self.running = False
         self.frame_count = 0
         self.keyframes = 0
+        self._next_force_key = False
 
         if self.mock:
             self._start_mock()
@@ -227,30 +228,42 @@ class JFinExporter:
                 "-hls_time", str(self.segment_duration),
                 "-hls_list_size", "6",
                 "-hls_flags", "delete_segments+independent_segments",
-                "-hls_keyinfo_file", os.path.join(self.hls_dir, "key.info"),
                 playlist,
             ]
 
-        cmd = [
-            self.ffmpeg_bin,
+        video_in = [
             "-f", "rawvideo",
             "-pix_fmt", "rgba",
             "-s", f"{self.width}x{self.height}",
             "-r", str(self.fps),
-            "-i", "-",  # stdin pipe
+            "-i", "-",
+        ]
+        video_enc = [
             "-c:v", "libx264",
             "-preset", "ultrafast",
             "-b:v", self.bitrate,
             "-pix_fmt", "yuv420p",
             "-force_key_frames", f"expr:gte(n,n_forced*{max(1, self.fps)})",
-        ] + out_args
-
+        ]
+        audio_in = []
+        audio_enc = []
+        audio_shortest = []
         if self.audio:
-            cmd[5:5] = [
+            audio_in = [
                 "-f", "lavfi",
                 "-i", "anullsrc=r=48000:cl=stereo",
-                "-shortest",
             ]
+            audio_enc = [
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-ar", "48000",
+                "-ac", "2",
+            ]
+            # anullsrc is infinite, so without -shortest ffmpeg never
+            # finishes a segment. -shortest tells it to stop when the
+            # other (video) input ends.
+            audio_shortest = ["-shortest"]
+        cmd = [self.ffmpeg_bin] + video_in + audio_in + video_enc + audio_enc + audio_shortest + out_args
 
         try:
             self._proc = subprocess.Popen(
@@ -268,19 +281,18 @@ class JFinExporter:
         self.running = True
 
     def force_keyframe(self):
-        """Force a keyframe on the next pushed frame.
+        """Mark the next push() as a keyframe.
 
-        In mock mode, increments the keyframes counter.
-        In real ffmpeg mode, flushes the stdin so the next frame's
-        segment boundary aligns with the keyframe flag.
+        The keyframes counter advances immediately so the caller can
+        observe a force_keyframe() call without a follow-up push(). The
+        actual keyframe boundary in the HLS stream is enforced by the
+        ffmpeg ``-force_key_frames`` expr in the argv (one every fps
+        frames). This method does NOT inject any bytes into the rawvideo
+        pipe (that would corrupt the stream).
         """
         with self._lock:
             self.keyframes += 1
-            if self._proc is not None:
-                try:
-                    self._proc.stdin.flush()
-                except (BrokenPipeError, OSError):
-                    pass
+            self._next_force_key = True
 
     def push(self, frame: bytes, width=None, height=None,
              force_key=False) -> bool:
@@ -302,8 +314,9 @@ class JFinExporter:
                         f"frame size mismatch: got {len(frame)} bytes, "
                         f"expected {expected} ({w}x{h} RGBA)"
                     )
-                if force_key:
+                if force_key or self._next_force_key:
                     self.keyframes += 1
+                self._next_force_key = False
                 self.frame_count += 1
                 return True
             if self._proc is None:
@@ -320,13 +333,12 @@ class JFinExporter:
                     f"expected {expected} ({w}x{h} RGBA)"
                 )
             try:
-                if force_key:
-                    self._proc.stdin.write(b"K")
-                    self._proc.stdin.flush()
-                    self.keyframes += 1
                 self._proc.stdin.write(frame)
                 self._proc.stdin.flush()
                 self.frame_count += 1
+                if force_key or self._next_force_key:
+                    self.keyframes += 1
+                self._next_force_key = False
                 return True
             except (BrokenPipeError, OSError) as e:
                 self.running = False

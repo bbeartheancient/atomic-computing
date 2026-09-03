@@ -127,6 +127,97 @@ class HostBridge:
             self._popped += 1
         return out if out else None
 
+    # -- iter 34: dedicated frame-blob path (video) --------------------------
+
+    def push_frame(self, tick, rgba_bytes, prompt="", seed=0,
+                   module_id="vv", width=0, height=0):
+        """Push one RGBA frame into the bridge (subconscious -> conscious).
+
+        The frame becomes available via pop_frame(t) after `latency` ticks.
+        The payload is a self-contained dict so a downstream consumer
+        (the conscious engine's viz_video atom) can render it without
+        re-deriving the H4 channel latches.
+        """
+        arrival = int(tick) + self.latency
+        stored = {
+            "rgba": bytes(rgba_bytes) if rgba_bytes is not None else b"",
+            "prompt": str(prompt),
+            "seed": int(seed),
+            "module_id": str(module_id),
+            "width": int(width),
+            "height": int(height),
+            "_frame": True,
+        }
+        # compute the H4 channel latches from the last pixel (W=log_alpha,
+        # X/Y/Z=linear RGB) for consumers that want a scalar sample
+        # without re-decoding the full frame.
+        try:
+            import math as _m
+            if len(stored["rgba"]) >= 4:
+                j = len(stored["rgba"]) - 4
+                a_raw = stored["rgba"][j + 3]
+                r_raw = stored["rgba"][j]
+                g_raw = stored["rgba"][j + 1]
+                b_raw = stored["rgba"][j + 2]
+                a_log = _m.log(max(1, a_raw))
+                w, z, y, x = h4_gate((a_log, float(b_raw),
+                                      float(g_raw), float(r_raw)))
+                stored["_w"] = w
+                stored["_x"] = x
+                stored["_y"] = y
+                stored["_z"] = z
+        except Exception:
+            pass
+        if len(self._q) >= self.capacity:
+            self._q.popleft()
+        self._q.append((arrival, stored))
+        self._pushed += 1
+
+    def pop_frame(self, tick):
+        """Consume all queued frame payloads whose arrival <= `tick`.
+
+        Returns a list of frame dicts (rgba, prompt, seed, module_id,
+        w, x, y, z) in arrival order, or [] if none are ready.
+        Scalar payloads (those without the _frame flag) are left in
+        the queue so pop() can deliver them.
+        """
+        out = []
+        keep = []
+        for arrival, payload in self._q:
+            if arrival > int(tick):
+                keep.append((arrival, payload))
+                continue
+            if payload.get("_frame"):
+                d = {k: v for k, v in payload.items()
+                     if not k.startswith("_")}
+                for k in ("_w", "_x", "_y", "_z"):
+                    if k in payload:
+                        d[k] = payload[k]
+                out.append(d)
+                self._popped += 1
+            else:
+                keep.append((arrival, payload))
+        self._q = collections.deque(keep)
+        return out
+
+    def peek_frame(self, tick):
+        """Return (but do NOT consume) all frame payloads whose arrival <= `tick`.
+
+        Useful for visual inspection without disturbing the bridge.
+        """
+        out = []
+        for arrival, payload in self._q:
+            if arrival > int(tick):
+                break
+            if payload.get("_frame"):
+                d = {k: v for k, v in payload.items()
+                     if not k.startswith("_")}
+                for k in ("_w", "_x", "_y", "_z"):
+                    if k in payload:
+                        d[k] = payload[k]
+                out.append(d)
+        return out
+
     def peek_arrivals(self):
         return [a for a, _ in self._q]
 

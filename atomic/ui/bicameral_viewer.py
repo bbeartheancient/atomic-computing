@@ -114,6 +114,113 @@ class BicameralViewer:
             self._running = False
         return self.snapshot()
 
+    # ── iter 34: feed_video_tick (server-push frame into conscious engine) ─
+
+    def feed_video_tick(self, frame_bytes, module_id="vv"):
+        """Push one RGBA frame into the conscious engine and tick once.
+
+        The frame is written to bus[con.<module_id>.frame] so the
+        viz_video atom can decode + render it. The pipeline then ticks
+        the conscious engine so the frame appears on the rendered bus
+        at the next snapshot.
+        """
+        pipe = self.pipeline
+        con = pipe.con
+        key = module_id + ".frame"
+        con.bus.set(key, bytes(frame_bytes))
+        pipe.tick()
+        self._tick_count = pipe._t
+        self._depth_history.append(pipe.bridge.depth())
+        if len(self._depth_history) > 512:
+            self._depth_history.pop(0)
+        return self.snapshot()
+
+    def feed_video_batch(self, frames, module_id="vv"):
+        """Push a list of RGBA frames into the conscious engine, one per tick."""
+        self._running = True
+        try:
+            for raw in frames:
+                self.feed_video_tick(raw, module_id=module_id)
+        finally:
+            self._running = False
+        return self.snapshot()
+
+    # ── iter 35: feed_ivl_tick (InfiniteVideoLoop step) ──────────────────
+
+    def feed_ivl_tick(self, loop):
+        """Step the InfiniteVideoLoop and capture the rendered viz_video output.
+
+        Args:
+            loop: an InfiniteVideoLoop wrapping this viewer.
+
+        Returns:
+            A snapshot dict with the updated sub/con/bridge state plus
+            the latest frame metadata (`_ivl_frame`) on the top level.
+
+        The H3Frame is captured from `loop.step()` BEFORE it returns None;
+        if the loop is exhausted (max_ticks reached), `_ivl_frame` is None
+        and the snapshot is returned unchanged.
+        """
+        frame = loop.step()
+        snap = self.snapshot()
+        if frame is not None:
+            try:
+                w, x, y, z = frame.rgba[-4:] if len(frame.rgba) >= 4 else (b"\x00\x00\x00\xff",)
+                if isinstance(w, int):
+                    a_log = math.log(max(1, frame.rgba[-1]))
+                    w_v, z_v, y_v, x_v = self._h4(frame.rgba)
+                else:
+                    w_v = z_v = y_v = x_v = 0.0
+            except Exception:
+                w_v = z_v = y_v = x_v = 0.0
+            snap["_ivl_frame"] = {
+                "t": frame.t,
+                "seed": frame.seed,
+                "prompt": frame.prompt,
+                "h3_latency_ms": frame.h3_latency_ms,
+                "size_bytes": frame.size_bytes,
+                "rgba_sha256": frame.sha256,
+                "w": w_v,
+                "x": x_v,
+                "y": y_v,
+                "z": z_v,
+            }
+        else:
+            snap["_ivl_frame"] = None
+        return snap
+
+    def feed_ivl_batch(self, loop, ticks: int):
+        """Step the InfiniteVideoLoop `ticks` times."""
+        out = []
+        for _ in range(int(ticks)):
+            snap = self.feed_ivl_tick(loop)
+            out.append(snap)
+        return self.snapshot()
+
+    @staticmethod
+    def _h4(rgba: bytes) -> tuple[float, float, float, float]:
+        """Compute H4 (W/Z/Y/X) channels from an RGBA frame.
+
+        Uses the last pixel (a, r, g, b) as a sample.
+        W = log(alpha)
+        X = linear red
+        Y = linear green
+        Z = linear blue
+        """
+        import math as _m
+        if len(rgba) < 4:
+            return (0.0, 0.0, 0.0, 0.0)
+        a_raw = rgba[-1]
+        r_raw = rgba[-4]
+        g_raw = rgba[-3]
+        b_raw = rgba[-2]
+        a_log = _m.log(max(1, a_raw))
+        # Apply Hadamard gate: (a_log, b, g, r) -> (W, Z, Y, X)
+        from ..qbf import h4_gate
+        w, z, y, x = h4_gate((a_log, float(b_raw),
+                              float(g_raw), float(r_raw)))
+        return (w, z, y, x)
+
     def snapshot(self) -> dict:
         pipe = self.pipeline
         sub_bus = pipe.sub.bus.snapshot() if pipe.sub else {}

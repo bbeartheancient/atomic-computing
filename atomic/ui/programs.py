@@ -153,6 +153,54 @@ def _jfin_export_demo() -> Program:
     )
 
 
+def _video_live() -> Program:
+    return Program(
+        "video_live",
+        description="viz_video_h3 (polls localhost:8765) -> tile wall",
+        blocks=[
+            Block("vh3", "viz_video_h3",
+                  {"server_url": "http://localhost:8765",
+                   "width": 64, "height": 64,
+                   "prompt": "a slow orbit around a frozen comet",
+                   "n_frames": 1,
+                   "timeout_s": 5.0,
+                   "max_retries": 3,
+                   "enabled": 1.0}),
+        ],
+        wires=[],
+    )
+
+
+def _feed_video_live() -> Program:
+    return Program(
+        "feed_video_live",
+        description="viz_video (server-push frames via /api/feed_video) -> tile wall",
+        blocks=[
+            Block("vv", "viz_video"),
+        ],
+        wires=[],
+    )
+
+
+def _fasth3_video_live() -> Program:
+    """iter 36: FastH3 (4-step VSA GGUF) program — renders via viz_fasth3_video.
+
+    The actual FastH3 frames are served by FastH3Session / InfiniteFastH3Loop
+    via HostBridge.push_frame into the conscious engine's bus[vfh.frame] key.
+    Params mirror FastH3Stub defaults: steps=4, vsa=ON (10% kept), Q5_K_M.
+    """
+    return Program(
+        "fasth3_video_live",
+        description="viz_fasth3_video (FastH3 4-step VSA, server-push) -> tile wall",
+        blocks=[
+            Block("vfh", "viz_fasth3_video",
+                  {"capture": 1.0, "steps": 4, "vsa": 1.0,
+                   "vsa_keep": 10, "quant": "Q5_K_M"}),
+        ],
+        wires=[],
+    )
+
+
 _REGISTRY: dict[str, Callable[[], Program]] = {
     "clock_counter": _clock_counter,
     "gated_clock_counter": _gated_clock_counter,
@@ -163,6 +211,9 @@ _REGISTRY: dict[str, Callable[[], Program]] = {
     "heatmap_demo": _heatmap_demo,
     "heatmap_live": _heatmap_live,
     "jfin_export_demo": _jfin_export_demo,
+    "video_live": _video_live,
+    "feed_video_live": _feed_video_live,
+    "fasth3_video_live": _fasth3_video_live,
 }
 
 
@@ -208,9 +259,119 @@ def _bicameral_clock() -> dict:
     }
 
 
+def _infinite_video_bicameral() -> dict:
+    """iter34: H3 -> HostBridge.push_frame -> viz_video (conscious sink).
+
+    Subconscious is just a clock_bpm@60 (the prompt-generation cadence).
+    Conscious renders the pushed RGBA frames via viz_video.
+    Bridge traffic is H3 frames (sub -> con) + the clock scalar (sub -> con).
+    """
+    return {
+        "type": "bicameral",
+        "sub": Program(
+            "infinite_video_sub",
+            description="clock_bpm@60 — H3 cadence",
+            blocks=[Block("clk", "clock_bpm", {"bpm": 60})],
+            wires=[],
+        ),
+        "con": Program(
+            "infinite_video_con",
+            description="viz_video — renders pushed RGBA frames",
+            blocks=[Block("vv", "viz_video")],
+            wires=[],
+        ),
+        "bridge_map": [("clk.trig", "vv.in")],
+        "bridge_latency": 1,
+        "use_h4": False,
+    }
+
+
 _BICAMERAL_REGISTRY: dict[str, callable] = {
     "bicameral_clock": _bicameral_clock,
+    "infinite_video_bicameral": _infinite_video_bicameral,
 }
+
+
+def _infinite_video_export() -> dict:
+    """iter35: VideoSynth -> InfiniteVideoLoop -> BicameralViewer -> viz_video + jfin_live_export.
+
+    Pipeline:
+      sub=clock_bpm@60 (cadence)
+      con=viz_video + jfin_live_export (frames injected via bridge bus, no wires needed)
+           -> JFinScheduler -> JFinExporter -> ffmpeg HLS
+           -> Jellyfin Live TV -> HDHomeRun M3U -> LAN clients
+
+    Frames are injected into the con engine's bus[vv.frame] key by the
+    InfiniteVideoLoop. The jfin_live_export block reads bus[jle.frame]
+    directly. No intra-program wires needed for frame traffic.
+    """
+    return {
+        "type": "bicameral",
+        "sub": Program(
+            "video_export_sub",
+            description="clock_bpm@60 — cadence for video export",
+            blocks=[Block("clk", "clock_bpm", {"bpm": 60})],
+            wires=[],
+        ),
+        "con": Program(
+            "video_export_con",
+            description="viz_video + jfin_live_export — tile wall + Jellyfin stream",
+            blocks=[
+                Block("vv", "viz_video"),
+                Block("jle", "jfin_live_export",
+                      {"scheduler_key": "atomic-01",
+                       "width": 64, "height": 64}),
+            ],
+            wires=[],
+        ),
+        "bridge_map": [],  # frame traffic uses bridge.push_frame/pop_frame; clock not needed
+        "bridge_latency": 1,
+        "use_h4": False,
+    }
+
+
+_BICAMERAL_REGISTRY["infinite_video_export"] = _infinite_video_export
+
+
+def _infinite_fasth3_bicameral() -> dict:
+    """iter 36: FastH3 (4-step VSA GGUF) -> HostBridge -> viz_fasth3_video.
+
+    Subconscious is a clock_bpm@60 (H3 / FastH3 frame cadence).
+    Conscious renders the pushed RGBA frames via viz_fasth3_video.
+    Bridge traffic is FastH3 frames (sub -> con); the clock scalar is
+    not used (frame cadence is one-per-tick).
+
+    This is the FastH3 twin of iter 34's infinite_video_bicameral: same
+    wire contract, FastH3 metadata (steps=4, vsa=ON, Q5_K_M) on every
+    frame. The InfiniteFastH3Loop populates the bus[vfh.frame] key and
+    drives the conscious engine exactly like InfiniteVideoLoop does for
+    base H3.
+    """
+    return {
+        "type": "bicameral",
+        "sub": Program(
+            "infinite_fasth3_sub",
+            description="clock_bpm@60 — FastH3 cadence",
+            blocks=[Block("clk", "clock_bpm", {"bpm": 60})],
+            wires=[],
+        ),
+        "con": Program(
+            "infinite_fasth3_con",
+            description="viz_fasth3_video — renders pushed FastH3 RGBA frames",
+            blocks=[
+                Block("vfh", "viz_fasth3_video",
+                      {"capture": 1.0, "steps": 4, "vsa": 1.0,
+                       "vsa_keep": 10, "quant": "Q5_K_M"}),
+            ],
+            wires=[],
+        ),
+        "bridge_map": [("clk.trig", "vfh.in")],
+        "bridge_latency": 1,
+        "use_h4": False,
+    }
+
+
+_BICAMERAL_REGISTRY["infinite_fasth3_bicameral"] = _infinite_fasth3_bicameral
 
 
 def build_bicameral(name: str) -> dict | None:

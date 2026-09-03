@@ -40,16 +40,19 @@ IMPORTANT: When making edits, make the edits first. If additional questions pers
             -- iteration budgets are capped at 128k; you must make your edits and end turn for next iteration at 128k token usage.
 
 Verify the harness (unified, vendored `fabric/` + `hoa64/`):
-- ATOMIC-PC harness (185 tests): `python -m pytest tests -q`
+- ATOMIC-PC harness (425 tests): `python -m pytest tests -q`
   (oracle MODE 1+2 spawn `node`; vendored `fabric/web/jsfx.js` + `hoa64` — no external sibling required).
-- ATOMIC-PC gauntlet (24 sections, ~190 checks, ~5s): `python -m atomic.selftest`
-- Live demos (six end-to-end scripts under `examples/`):
+- ATOMIC-PC gauntlet (34 sections, ~210 checks, ~5s): `python -m atomic.selftest`
+- Live demos (eight end-to-end scripts under `examples/`):
   - `python -m examples.qbf_persistence_round_trip` — record+archive+load+replay a trace via `.qbf` shard
   - `python -m examples.hadamard_wxyz_scope`        — h4_slide keystone + 4x4 Display + viz_series
   - `python -m examples.gated_clock_counter`        — from_description() -> compile -> engine run
   - `python -m examples.swarm_evolve_teach_demo`     — swarm -> evolve -> teach -> QBF round-trip
   - `python -m examples.heatmap_animation`          — Display.heatmap_animation from a live trace
   - `python -m examples.bicameral_pipeline`         — iter 25: sub=clock_bpm@60 -> HostBridge(bridge_latency=1) -> con=accum->smooth->viz_series (two engines, 1-tick host-RAM)
+  - `python -m examples.swarm_video_h3_consensus`    — iter 33: 4-agent Swarm H4 W-channel consensus -> H3 prompt routing
+  - `python -m examples.qbf_video_frame_trace`       — iter 33: H3 frames -> FlowTrace -> QBF shard -> load_run -> flow_trace (bit-exact video round-trip)
+  - `python -m examples.infinite_slop_loop`          — iter 41: Swarm H4 pick -> H3Stub -> FlowTrace -> fitness -> SlopEvolver (bank evolve) -> QBF archive
 - ATOMIC-PC UI tile wall (iter 17, port 18094, FastAPI + HTML5 canvas):
   - boot: `uvicorn atomic.ui:app --port 18094 --host 0.0.0.0`
   - browse: `http://localhost:18094/run/hadamard_wxyz` (any of 7 demo programs)
@@ -58,8 +61,10 @@ Verify the harness (unified, vendored `fabric/` + `hoa64/`):
           `/api/snapshot/<p>`, `/api/tap/<p>`, `/api/feed/<p>`, `/api/batch/<p>`, `/api/stream/<p>`
   - REST (bicameral): `/api/bicameral`, `/api/bicameral/<p>/snapshot`, `/api/bicameral/<p>/batch`,
           `/api/bicameral/<p>/bridge`
+  - REST (feed_video, iter 33): `/api/feed_video/<p>/start|stop|push_frame|batch|status`
+          — server-push H3 frames into the engine via viz_video; WebSocket push via `/ws/feed_video/<p>`
   - WS: `/ws/<p>` — per-tick snapshot stream; `/ws/bicameral/<p>` (iter 25: bicameral pipeline,
-    sub/con/bridge snapshot with bridge depth history)
+    sub/con/bridge snapshot with bridge depth history); `/ws/feed_video/<p>` (iter 33: server-push tick loop)
 
 Verify the vendored harness:
 - EEL2/JSFX runtime + fabric suite: `python -m pytest fabric/tests -q`

@@ -247,6 +247,43 @@ class Viewer:
         eng.bus.set(key, bytes(frame_bytes))
         return True
 
+    # ── iter 33: feed_video — server-push video frames into the engine ──────
+
+    def feed_video_tick(self, frame_bytes: bytes | bytearray,
+                        module_id: str = "vv") -> None:
+        """Feed one RGBA frame into the engine and advance one tick.
+
+        This is the server-push path: a video session (H3 or local stub)
+        generates a frame, calls this method, and the engine tick renders it
+        onto the tile wall via the viz_video sink. The frame_bytes are written
+        to bus[<module_id>.frame] so the viz_video atom can decode + render.
+        """
+        eng = self.engine
+        key = module_id + ".frame"
+        eng.bus.set(key, bytes(frame_bytes))
+        self.apply_pending(self._tick_count)
+        eng.tick()
+        self._tick_count = eng._t
+
+    def feed_video_batch(self, frames: list[bytes],
+                         module_id: str = "vv") -> dict:
+        """Feed a list of RGBA frames into the engine, one per tick.
+
+        Returns the final snapshot after all frames are consumed.
+        """
+        self._running = True
+        eng = self.engine
+        try:
+            for raw in frames:
+                key = module_id + ".frame"
+                eng.bus.set(key, bytes(raw))
+                self.apply_pending(self._tick_count)
+                eng.tick()
+                self._tick_count = eng._t
+        finally:
+            self._running = False
+        return self.snapshot()
+
     @property
     def last_latency(self) -> tuple[float, float]:
         return (getattr(self, '_last_eng_us', 0.0),
@@ -302,6 +339,7 @@ _VIZ_TYPES = {
     "viz_xy": "xy",
     "viz_wxyz3d": "wxyz3d",
     "viz_video": "video",
+    "viz_video_h3": "video",
 }
 
 
