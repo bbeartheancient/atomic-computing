@@ -146,9 +146,19 @@
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     grid-template-rows: repeat(4, 1fr);
-    gap: 3px;
-    padding: 3px;
-    background: #08080f;
+    gap: 0;
+    padding: 0;
+    background: #050510;
+    min-height: 0;
+  }
+  #tile-wall-2 {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(4, 1fr);
+    gap: 0;
+    padding: 0;
+    background: #050510;
     min-height: 0;
   }
   .tile-wall-viewport {
@@ -205,29 +215,36 @@
   #zoom-controls button:hover { border-color: var(--accent); color: var(--accent); }
   #zoom-scale { min-width: 36px; text-align: center; color: var(--accent2); }
   .tile {
-    background: var(--tile-bg);
-    border: 1px solid var(--tile-border);
-    border-radius: 2px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
     position: relative;
     min-height: 0;
   }
+  .tile.has-data {
+    border: 1px solid rgba(255,255,255,0.08);
+  }
   .tile-cap {
-    flex: 0 0 18px;
-    font-size: 9px;
-    color: var(--text-dim);
-    padding: 2px 5px;
-    background: #0a0a1a;
-    border-bottom: 1px solid var(--tile-border);
+    flex: 0 0 16px;
+    font-size: 8px;
+    color: rgba(255,255,255,0.35);
+    padding: 1px 4px;
+    background: rgba(0,0,0,0.6);
+    border-bottom: none;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
+    opacity: 0;
+    transition: opacity 0.15s;
   }
+  .tile:hover .tile-cap, .tile.has-data .tile-cap { opacity: 1; }
+  .tile-cap:hover { opacity: 1 !important; }
   .tile-cap .tile-id {
     color: var(--accent2);
     font-size: 9px;
@@ -324,6 +341,7 @@
     font-family: var(--font); font-size: 10px; padding: 2px 6px; width: 110px;
     border-radius: 2px;
   }
+  #pane-host { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .pane-host.split { display: flex; flex-direction: row; flex: 1; min-height: 0; }
   .pane-host.split #tile-wall { flex: 1 1 50%; border-right: 2px solid var(--accent2); }
   .pane-host.split #tile-wall-2 { flex: 1 1 50%; }
@@ -500,15 +518,27 @@
   <button id="split-btn" class="hdr-btn" title="Toggle 2-pane split view">SPLIT</button>
   <button id="fullscreen-btn" class="hdr-btn" title="Fullscreen mode (F)">FS</button>
   <button id="fav-filter-btn" class="hdr-btn" title="Show favorites only (press *)">★ ALL</button>
+  <button id="system-btn" class="hdr-btn" title="Toggle system control bars (H3 server, JFin)">SYSTEM</button>
   <div style="flex:1"></div>
   <div id="speed-wrap">
     <label>Speed</label>
     <input id="speed-slider" type="range" min="1" max="60" value="30">
     <span id="speed-val">30 fps</span>
   </div>
+  <button id="play-btn" class="hdr-btn" title="Play/Pause (P)">PLAY</button>
+  <button id="step-btn" class="hdr-btn" title="Single-step (.)">STEP</button>
   <button id="tap-btn">TAP</button>
   <span id="tick-counter">t=0</span>
   <span id="status" class="paused">PAUSED</span>
+</div>
+
+<!-- iter 45: live feed overlay — appears when WS connected, lets user send raw tick params -->
+<div id="live-feed-bar" style="flex:0 0 30px;background:#0a0a18;border-bottom:1px solid var(--tile-border);padding:4px 12px;display:none;align-items:center;gap:8px;font-size:10px;min-height:28px;">
+  <span style="color:var(--accent);font-weight:bold;">LIVE FEED</span>
+  <input id="feed-tick-in" type="number" min="0" max="10000" value="0" style="width:50px;background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 4px;font-family:var(--font);font-size:10px;" title="Tick number to send feed on">
+  <input id="feed-param-in" placeholder="module.key=value" style="flex:1;background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 6px;font-family:var(--font);font-size:10px;" value="">
+  <button id="feed-send-btn" style="background:var(--accent);color:#000;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;font-weight:bold;">SEND</button>
+  <span id="feed-status" style="color:var(--text-dim);">idle</span>
 </div>
 
 <div id="presets-bar">
@@ -572,6 +602,63 @@
   <span id="fv-status" style="color:var(--text-dim);">idle</span>
 </div>
 
+<!-- iter 46: Slop loop controls (visible when program == infinite_slop_loop) -->
+<div id="slop-controls" style="display:none; flex:0 0 32px; align-items:center; gap:8px; padding:0 16px; background:#0a0a18; border-top:1px solid var(--tile-border); font-size:10px;">
+  <span style="color:var(--accent);font-weight:bold;">infinite_slop</span>
+  <input id="slop-prompts" placeholder="prompts (comma-sep, blank=default bank)" style="flex:1;background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 6px;font-family:var(--font);font-size:10px;">
+  <select id="slop-fitness" style="background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 4px;font-family:var(--font);font-size:10px;">
+    <option value="color_variance">color_variance</option>
+    <option value="complexity">complexity</option>
+    <option value="h4_w_latch">h4_w_latch</option>
+    <option value="composite">composite</option>
+  </select>
+  <input id="slop-width" type="number" min="8" max="256" step="8" value="64" style="width:40px;background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 4px;font-family:var(--font);font-size:10px;" title="width">
+  <input id="slop-height" type="number" min="8" max="256" step="8" value="64" style="width:40px;background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 4px;font-family:var(--font);font-size:10px;" title="height">
+  <input id="slop-seed" type="number" min="0" max="9999" value="0" style="width:50px;background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 4px;font-family:var(--font);font-size:10px;" title="seed">
+  <button id="slop-start-btn" style="background:var(--accent);color:#000;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;font-weight:bold;">Start</button>
+  <button id="slop-stop-btn" style="background:#aa3333;color:#fff;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;font-weight:bold;" disabled>Stop</button>
+  <button id="slop-evolve-btn" style="background:#2244aa;color:#fff;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;" disabled>Evolve</button>
+  <span id="slop-status" style="color:var(--text-dim);">idle</span>
+</div>
+
+<!-- iter 46: IVL controls (visible for infinite_video_bicameral program) -->
+<div id="ivl-controls" style="display:none; flex:0 0 32px; align-items:center; gap:8px; padding:0 16px; background:#0a0a18; border-top:1px solid var(--tile-border); font-size:10px;">
+  <span style="color:var(--accent);font-weight:bold;">IVL</span>
+  <select id="ivl-effect" style="background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 4px;font-family:var(--font);font-size:10px;">
+    <option value="wave">wave</option>
+    <option value="noise_field">noise_field</option>
+    <option value="pixel_sort">pixel_sort</option>
+    <option value="mandelbrot">mandelbrot</option>
+    <option value="fluid">fluid</option>
+  </select>
+  <input id="ivl-h3-url" placeholder="h3_url (blank=VideoSynth)" style="width:200px;background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 6px;font-family:var(--font);font-size:10px;">
+  <input id="ivl-width" type="number" min="8" max="256" step="8" value="64" style="width:40px;background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 4px;font-family:var(--font);font-size:10px;">
+  <input id="ivl-height" type="number" min="8" max="256" step="8" value="64" style="width:40px;background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 4px;font-family:var(--font);font-size:10px;">
+  <button id="ivl-start-btn" style="background:var(--accent);color:#000;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;font-weight:bold;">Start</button>
+  <button id="ivl-stop-btn" style="background:#aa3333;color:#fff;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;font-weight:bold;" disabled>Stop</button>
+  <span id="ivl-status" style="color:var(--text-dim);">idle</span>
+</div>
+
+<!-- iter 46: H3 server lifecycle (visible always; collapsible) -->
+<div id="h3-server-controls" style="display:none; flex:0 0 28px; align-items:center; gap:8px; padding:0 16px; background:#0a0a18; border-top:1px solid var(--tile-border); font-size:10px;">
+  <span style="color:var(--accent);font-weight:bold;">H3 server</span>
+  <input id="h3-port" type="number" min="1024" max="65535" value="8765" style="width:60px;background:var(--bus-bg);color:var(--text);border:1px solid var(--bus-border);padding:2px 4px;font-family:var(--font);font-size:10px;" title="port">
+  <button id="h3-start-btn" style="background:#22aa44;color:#fff;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;font-weight:bold;">Start</button>
+  <button id="h3-stop-btn" style="background:#aa3333;color:#fff;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;font-weight:bold;" disabled>Stop</button>
+  <button id="h3-status-btn" style="background:#2244aa;color:#fff;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;">Status</button>
+  <span id="h3-server-status" style="color:var(--text-dim);">—</span>
+</div>
+
+<!-- iter 46: JFin scheduler controls (visible always; collapsible) -->
+<div id="jfin-controls" style="display:none; flex:0 0 28px; align-items:center; gap:8px; padding:0 16px; background:#0a0a18; border-top:1px solid var(--tile-border); font-size:10px;">
+  <span style="color:var(--accent);font-weight:bold;">JFin</span>
+  <button id="jfin-discover-btn" style="background:#2244aa;color:#fff;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;">Discover</button>
+  <button id="jfin-channels-btn" style="background:#2244aa;color:#fff;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;">Channels</button>
+  <button id="jfin-exporters-btn" style="background:#2244aa;color:#fff;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;">Exporters</button>
+  <button id="jfin-rotate-btn" style="background:#aa6633;color:#fff;border:none;padding:2px 10px;cursor:pointer;font-family:var(--font);font-size:10px;">Rotate</button>
+  <span id="jfin-status" style="color:var(--text-dim);">—</span>
+</div>
+
 <div id="pane2-host-info" style="display:none;"></div>
 <div id="record-status" style="display:none;"></div>
 
@@ -621,7 +708,7 @@
 <script>
 // ── Program name from URL ────────────────────────────────────────────────────
 const _path = window.location.pathname;
-const _name = _path.startsWith('/run/') ? _path.slice(5) : 'default';
+const _name = _path.startsWith('/run/') ? _path.slice(5) : 'clock_counter';
 const _saved = (() => {
   try { return JSON.parse(localStorage.getItem('atomic_pc') || '{}'); } catch(e) { return {}; }
 })();
@@ -631,6 +718,8 @@ const state = {
   name: _name,
   running: false,
   tick: 0,
+  playing: true,         // iter 45: client-side play/pause state (controls fetch poll; WS always live)
+  playRequested: true,   // iter 45: whether user wants engine ticking (sent via /api/control/playing)
   bus: {},
   series: {},          // key -> [float]
   views: [],           // [{id, module, output, key, as, viz, tile_row, tile_col}]
@@ -774,6 +863,91 @@ function _currentSnapshot() {
     ts: Date.now(),
   };
 }
+
+// ── iter 46: server-side presets ───────────────────────────────────────────
+let _serverPresets = {};  // name -> preset dict
+
+async function _fetchServerPresets() {
+  try {
+    const r = await fetch('/api/presets');
+    if (!r.ok) return;
+    const d = await r.json();
+    _serverPresets = {};
+    for (const p of (d.presets || [])) {
+      _serverPresets[p.name] = p;
+    }
+  } catch(e) {}
+}
+
+async function _saveServerPreset(name) {
+  name = (name || '').trim();
+  if (!name) {
+    const info = document.getElementById('preset-info');
+    if (info) info.textContent = 'name required';
+    return;
+  }
+  const snap = _currentSnapshot();
+  snap.description = 'saved from UI';
+  try {
+    await fetch('/api/presets/' + encodeURIComponent(name), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(snap),
+    });
+    await _fetchServerPresets();
+    await _refreshPresetSelect();
+    const info = document.getElementById('preset-info');
+    if (info) info.textContent = 'saved "' + name + '"';
+  } catch(e) {
+    const info = document.getElementById('preset-info');
+    if (info) info.textContent = 'save failed: ' + e.message;
+  }
+}
+
+async function _loadServerPreset(name) {
+  const p = _serverPresets[name];
+  if (!p) {
+    const info = document.getElementById('preset-info');
+    if (info) info.textContent = 'no preset "' + name + '"';
+    return;
+  }
+  // Fetch full preset data
+  try {
+    const r = await fetch('/api/presets/' + encodeURIComponent(name));
+    if (!r.ok) return;
+    const full = await r.json();
+    _applyPreset(full);
+    const info = document.getElementById('preset-info');
+    if (info) info.textContent = 'loaded "' + name + '"';
+  } catch(e) {
+    const info = document.getElementById('preset-info');
+    if (info) info.textContent = 'load failed: ' + e.message;
+  }
+}
+
+async function _deleteServerPreset(name) {
+  if (!_serverPresets[name]) return;
+  try {
+    await fetch('/api/presets/' + encodeURIComponent(name), {method: 'DELETE'});
+    await _fetchServerPresets();
+    await _refreshPresetSelect();
+    const info = document.getElementById('preset-info');
+    if (info) info.textContent = 'deleted "' + name + '"';
+  } catch(e) {}
+}
+
+async function _refreshPresetSelect() {
+  const sel = document.getElementById('preset-select');
+  sel.innerHTML = '<option value="">— select —</option>';
+  // Merge server + local presets (server takes priority on name collision)
+  const merged = {..._presets, ..._serverPresets};
+  const names = Object.keys(merged).sort();
+  for (const n of names) {
+    const opt = document.createElement('option');
+    opt.value = n; opt.textContent = n;
+    sel.appendChild(opt);
+  }
+}
 function _applyPreset(p) {
   if (!p) return;
   if (p.program && p.program !== state.name) {
@@ -812,39 +986,11 @@ function _applyPreset(p) {
   _refreshTileNames();
   redrawWall();
   const info = document.getElementById('preset-info');
-  if (info) info.textContent = 'loaded ' + Object.keys(_presets).length +
-    ' preset(s) · current applied';
+  if (info) info.textContent = 'preset applied';
 }
-function savePreset(name) {
-  name = (name || '').trim();
-  if (!name) {
-    const info = document.getElementById('preset-info');
-    if (info) info.textContent = 'name required';
-    return;
-  }
-  _presets[name] = _currentSnapshot();
-  _savePresets();
-  _refreshPresetSelect();
-  const info = document.getElementById('preset-info');
-  if (info) info.textContent = 'saved "' + name + '"';
-}
-function loadPreset(name) {
-  const p = _presets[name];
-  if (!p) {
-    const info = document.getElementById('preset-info');
-    if (info) info.textContent = 'no preset "' + name + '"';
-    return;
-  }
-  _applyPreset(p);
-}
-function deletePreset(name) {
-  if (!_presets[name]) return;
-  delete _presets[name];
-  _savePresets();
-  _refreshPresetSelect();
-  const info = document.getElementById('preset-info');
-  if (info) info.textContent = 'deleted "' + name + '"';
-}
+function savePreset(name) { _saveServerPreset(name); }
+function loadPreset(name) { _loadServerPreset(name); }
+function deletePreset(name) { _deleteServerPreset(name); }
 
 // ── Theme (iter 5) ────────────────────────────────────────────────────────────
 function applyTheme(name) {
@@ -1241,7 +1387,12 @@ const TILE_COLS = 4;
 const TILE_ROWS = 4;
 
 function buildWall(wallEl, paneId) {
+  // iter 47: framebuffers are agnostic — build the wall ONCE at script load.
+  // Subsequent calls are no-ops so the existing canvases (and their
+  // noise/static content) are preserved across program switches.
+  if (wallEl.dataset.built === '1') return;
   wallEl.innerHTML = '';
+  wallEl.dataset.built = '1';
   for (let i = 0; i < TILE_COLS * TILE_ROWS; i++) {
     const row = Math.floor(i / TILE_COLS);
     const col = i % TILE_COLS;
@@ -1408,6 +1559,72 @@ function buildWall(wallEl, paneId) {
 }
 buildWall(WALL, 'tile');
 buildWall(WALL2, 'tile2');
+// iter 47: init all 16 framebuffer canvases to noise/static immediately.
+// Each tile gets a seeded noise pattern so they look distinct and
+// identifiable from page load — before any program runs or WS connects.
+// The noise acts as a visual placeholder until the app writes data.
+// requestAnimationFrame ensures layout has run so clientWidth/clientHeight
+// are non-zero before we read them.
+requestAnimationFrame(() => {
+  _initFramebuffers();
+});
+
+// Public API: paint noise/static onto all framebuffers (used after buildWall rebuilds)
+window.fbNoiseAll = _initFramebuffers;
+
+function _initFramebuffers() {
+  const dpr = window.devicePixelRatio || 1;
+  for (const canvas of document.querySelectorAll('.tile canvas')) {
+    paintFramebufferNoise(canvas, dpr);
+  }
+}
+
+function paintFramebufferNoise(canvas, dpr) {
+  dpr = dpr || (window.devicePixelRatio || 1);
+  const parent = canvas.parentElement;
+  if (!parent) return;
+  const w = parent.clientWidth;
+  const h = parent.clientHeight;
+  if (w <= 0 || h <= 0) return;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  const ctx = canvas.getContext('2d');
+  // Black background
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Seed the noise by tile id so each tile looks distinct
+  const tileId = parent.id || 'tile-0-0';
+  const seed = _fbSeedFromId(tileId);
+  const W = canvas.width, H = canvas.height;
+  // Sparse "TV static" pattern
+  const n = Math.min(W * H, 8192);
+  for (let i = 0; i < n; i++) {
+    const x = (Math.sin((i + seed) * 12.9898) * 43758.5453) % 1;
+    const y = (Math.sin((i + seed) * 78.233)  * 43758.5453) % 1;
+    const px = Math.abs(x * W) | 0;
+    const py = Math.abs(y * H) | 0;
+    const r = (Math.sin((i + seed) * 0.1) * 127 + 128) | 0;
+    const g = (Math.sin((i + seed) * 0.13) * 127 + 128) | 0;
+    const b = (Math.sin((i + seed) * 0.17) * 127 + 128) | 0;
+    ctx.fillStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.4)';
+    ctx.fillRect(px, py, 2, 2);
+  }
+  // Faint scanline overlay
+  ctx.fillStyle = 'rgba(255,255,255,0.04)';
+  for (let y = 0; y < H; y += 2) {
+    ctx.fillRect(0, y, W, 1);
+  }
+  // Subtle corner stamp so disconnected tiles are obviously "no signal"
+  ctx.fillStyle = 'rgba(255,140,0,0.7)';
+  ctx.font = Math.round(Math.min(W, H) * 0.12) + 'px monospace';
+  ctx.fillText('NO SIG', Math.round(W * 0.1), Math.round(H * 0.5));
+}
+
+function _fbSeedFromId(id) {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return h;
+}
 
 function _refreshTileNames() {
   for (let r = 0; r < TILE_ROWS; r++) {
@@ -1486,7 +1703,21 @@ const _ro = new ResizeObserver((entries) => {
     resizeTile(r, c, pane);
   }
 });
-document.querySelectorAll('.tile').forEach(t => _ro.observe(t));
+// iter 47: observe ALL tiles in both panes (buildWall already ran at script load,
+// but if panes are rebuilt on program switch we re-observe too)
+function _ro_observe_all() {
+  document.querySelectorAll('.tile').forEach(t => _ro.observe(t));
+}
+_ro_observe_all();
+// re-observe when programs switch (buildWall clears + recreates tiles)
+const _orig_switch = window._switchProgram;
+if (typeof _orig_switch === 'function') {
+  window._switchProgram = function(...args) {
+    const r = _orig_switch.apply(this, args);
+    setTimeout(_ro_observe_all, 0);
+    return r;
+  };
+}
 
 // ── Drawing helpers ─────────────────────────────────────────────────────────
 function _px(canvas, x, y, w, h, color) {
@@ -1761,6 +1992,8 @@ function _isGroupLead(row, col, pane) {
 
 function renderTile(tileRow, tileCol, views, series, heatmap, pane) {
   pane = pane || 'tile';
+
+  // Check tile groups (user-defined linking)
   const grp = _isGroupLead(tileRow, tileCol, pane);
   if (grp && !grp.lead) {
     const canvas = tileCanvas(tileRow, tileCol, pane);
@@ -1774,7 +2007,20 @@ function renderTile(tileRow, tileCol, views, series, heatmap, pane) {
     renderGroup(grp.gid, grp.tiles, views, series, heatmap, pane);
     return;
   }
-  const view = views.find(v => v.tile_row === tileRow && v.tile_col === tileCol);
+
+  // Find all views that cover this tile slot
+  const covering = views.filter(v => {
+    const r0 = v.tile_row, c0 = v.tile_col;
+    const rs = v.tile_rows || 1, cs = v.tile_cols || 1;
+    return r0 <= tileRow && tileRow < r0 + rs && c0 <= tileCol && tileCol < c0 + cs;
+  });
+  // Lead view = view whose top-left corner is this tile
+  const leadView = covering.find(v => v.tile_row === tileRow && v.tile_col === tileCol);
+  const spanningView = covering.find(v =>
+    (v.tile_rows || 1) > 1 || (v.tile_cols || 1) > 1
+  );
+  const spanningLead = spanningView && spanningView.tile_row === tileRow && spanningView.tile_col === tileCol;
+
   const canvas = tileCanvas(tileRow, tileCol, pane);
   if (!canvas) return;
   const tile = canvas.parentElement;
@@ -1788,9 +2034,13 @@ function renderTile(tileRow, tileCol, views, series, heatmap, pane) {
   const tileColor = state.tileColors[tileKey] || null;
   drawHeatmapTile(canvas, hmVal, state.heatmap_signed, tileColor);
 
+  const view = leadView;
   if (!view) {
     tile.className = 'tile heatmap';
-    if (capType) capType.textContent = 'hm';
+    if (spanningView) {
+      tile.classList.add('has-data');
+    }
+    if (capType) capType.textContent = 'spanning';
     if (capId) {
       const n = pane === 'tile2' ? state.tile_names2 : state.tile_names;
       const lbl = n ? (n[tileKey] || 'r' + tileRow + 'c' + tileCol) : 'r' + tileRow + 'c' + tileCol;
@@ -1801,11 +2051,38 @@ function renderTile(tileRow, tileCol, views, series, heatmap, pane) {
 
   const { key } = view;
   const viz = _effectiveViz(view, tileRow, tileCol);
-  tile.className = 'tile ' + viz;
+  tile.className = 'tile ' + viz + ' has-data';
   if (capType) capType.textContent = viz + (state.tileVizOverride[tileKey] ? '*' : '');
   if (capId) capId.textContent = view.module;
 
-  if (viz === 'series') {
+  // For a spanning lead view: render into merged canvas covering all spanned tiles
+  if (spanningLead) {
+    const rs = view.tile_rows || 1, cs = view.tile_cols || 1;
+    const dpr = window.devicePixelRatio || 1;
+    const baseW = canvas.clientWidth;
+    const baseH = canvas.clientHeight;
+    if (baseW > 0 && baseH > 0) {
+      const off = document.createElement('canvas');
+      off.width = Math.round(baseW * cs * dpr);
+      off.height = Math.round(baseH * rs * dpr);
+      const octx = off.getContext('2d');
+      octx.fillStyle = '#050510';
+      octx.fillRect(0, 0, off.width, off.height);
+      if (viz === 'video') {
+        drawVideoFrameOn(off, view, state.bus, tileColor);
+      } else if (viz === 'series') {
+        drawSeriesOn(off, series, key, tileColor);
+      } else if (viz === 'xy') {
+        const [xk, yk] = _xy_keys(key);
+        drawXYOn(off, series, xk, yk, tileColor);
+      } else if (viz === 'wxyz3d') {
+        const [wk, xk, yk, zk] = _wxyz_keys(key);
+        drawWXYZ3DOn(off, series, wk, xk, yk, zk, tileColor);
+      }
+      // Copy scaled to each tile
+      _spreadCanvas(canvas, off, tileRow, tileCol, rs, cs, pane);
+    }
+  } else if (viz === 'series') {
     drawSeries(canvas, series, key, tileColor);
   } else if (viz === 'xy') {
     const [xk, yk] = _xy_keys(key);
@@ -1816,6 +2093,110 @@ function renderTile(tileRow, tileCol, views, series, heatmap, pane) {
   } else if (viz === 'video') {
     drawVideoFrame(canvas, view, state.bus, series, tileColor);
   }
+}
+
+// Spread the off-screen canvas onto all tiles in the span
+function _spreadCanvas(leadCanvas, offCanvas, tileRow, tileCol, tileRows, tileCols, pane) {
+  const dpr = window.devicePixelRatio || 1;
+  for (let r = tileRow; r < tileRow + tileRows; r++) {
+    for (let c = tileCol; c < tileCol + tileCols; c++) {
+      const canvas = tileCanvas(r, c, pane);
+      if (!canvas || (r === tileRow && c === tileCol)) continue;
+      const ctx = canvas.getContext('2d');
+      const tw = canvas.clientWidth, th = canvas.clientHeight;
+      ctx.fillStyle = '#050510';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(offCanvas,
+        Math.round(c * tw * dpr), Math.round(r * th * dpr),
+        Math.round(tw * dpr), Math.round(th * dpr),
+        0, 0, canvas.width, canvas.height);
+    }
+  }
+}
+
+// On-canvas drawing helpers (for off-screen canvas passed in)
+function drawVideoFrameOn(canvas, view, bus, colorOverride) {
+  const W = canvas.width, H = canvas.height;
+  const ctx = canvas.getContext('2d');
+  const mid = view.module;
+  const rgbaDec = bus[mid + '.rgba_decoded'];
+  const rgbaRaw = bus[mid + '.rgba'];
+  const ready = (bus[mid + '.ready'] !== undefined) ? bus[mid + '.ready'] : null;
+  let drew = false;
+  const drawPixels = (bytes) => {
+    let b;
+    if (bytes instanceof Uint8Array) b = bytes;
+    else if (bytes && bytes.byteLength !== undefined && bytes.buffer) {
+      b = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    } else {
+      try { b = new Uint8Array(bytes); } catch (e) { return false; }
+    }
+    const n = b.length;
+    if (n < 4) return false;
+    let side = Math.round(Math.sqrt(n / 4));
+    if (side * side * 4 !== n) side = 64;
+    const img = ctx.createImageData(side, side);
+    img.data.set(b.subarray(0, side * side * 4));
+    ctx.imageSmoothingEnabled = false;
+    ctx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(ctx.canvas, 0, 0, side, side, 0, 0, W, H);
+    return true;
+  };
+  if (rgbaDec) drew = drawPixels(rgbaDec) || drew;
+  else if (rgbaRaw) drew = drawPixels(rgbaRaw) || drew;
+  if (!drew) {
+    ctx.fillStyle = '#222244';
+    ctx.font = Math.round(W / 10) + 'px monospace';
+    ctx.fillText('no frame', Math.round(W / 20), Math.round(H / 2));
+  }
+}
+
+function drawSeriesOn(canvas, series, key, colorOverride) {
+  const W = canvas.width, H = canvas.height;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, W, H);
+  const vals = series[key];
+  if (!vals || vals.length < 2) return;
+  const n = vals.length;
+  const mn = Math.min(...vals), mx = Math.max(...vals);
+  const range = mx - mn || 1;
+  ctx.strokeStyle = colorOverride || '#00ffcc';
+  ctx.lineWidth = Math.max(1, W / 200);
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * W;
+    const y = H - ((vals[i] - mn) / range) * H * 0.9 - H * 0.05;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawXYOn(canvas, series, xKey, yKey, colorOverride) {
+  const W = canvas.width, H = canvas.height;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, W, H);
+  const xv = series[xKey], yv = series[yKey];
+  if (!xv || !yv || xv.length < 2) return;
+  const n = Math.min(xv.length, yv.length);
+  const xm = Math.min(...xv), xmx = Math.max(...xv);
+  const ym = Math.min(...yv), ymx = Math.max(...yv);
+  const xr = xmx - xm || 1, yr = ymx - ym || 1;
+  ctx.strokeStyle = colorOverride || '#ff6644';
+  ctx.lineWidth = Math.max(1, W / 200);
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const px = ((xv[i] - xm) / xr) * W;
+    const py = H - ((yv[i] - ym) / yr) * H;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+}
+
+function drawWXYZ3DOn(canvas, series, wk, xk, yk, zk, colorOverride) {
+  drawSeriesOn(canvas, series, wk, colorOverride);
 }
 
 // ── Multi-tile group render ───────────────────────────────────────────────────
@@ -1922,13 +2303,14 @@ const HM_SIGNED_NEG = ['#400000', '#801818', '#cc2828', '#ff4444'];
 const HM_COLORS_SINGLE = ['#0d0020', '#300060', '#8800ff', '#ff8c00'];
 
 function drawHeatmapTile(canvas, val, signed, colorOverride) {
+  // iter 47: if no data, leave the framebuffer's noise/static intact
+  if (val === undefined || val === null || val === 0) return;
   const dpr = window.devicePixelRatio || 1;
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#050510';
   ctx.fillRect(0, 0, W, H);
-  if (val === undefined || val === null || val === 0) return;
   const intensity = Math.abs(val);
   const sign = val < 0 ? -1 : 1;
   if (signed) {
@@ -2071,6 +2453,7 @@ function connectWS(name, pane) {
       state.connected = true;
       state.ws_attempts = 0;
       setWSStatus('connecting', 'WS: INIT');
+      _setLiveFeedVisible(true);  // iter 45: show live feed bar on WS connect
       loadControl();
       fetch('/api/views/' + state.name)
         .then(r => r.json())
@@ -2102,6 +2485,7 @@ function connectWS(name, pane) {
     } else {
       state.connected = false;
       setWSStatus('disconnected', 'WS: —');
+      _setLiveFeedVisible(false);  // iter 45: hide feed bar on disconnect
       const delay = _backoffMs();
       state.ws_attempts += 1;
       setTimeout(() => connectWS(state.name, 'tile'), delay);
@@ -2131,6 +2515,21 @@ setInterval(_sendPing, 3000);
 
 // ── Snapshot apply ───────────────────────────────────────────────────────────
 // pane: 'tile' (pane 1, default) or 'tile2' (pane 2)
+// iter 45: added throttling — schedule a redraw at most once per 16ms (60fps cap).
+// This prevents the main thread from being flooded when WS delivers at 30fps
+// but the browser has a higher rAF budget.
+let _redrawTimer = null;
+let _redrawPending = false;
+function _scheduleRedraw(pane) {
+  if (_redrawPending) return;
+  _redrawPending = true;
+  if (_redrawTimer) return;
+  _redrawTimer = setTimeout(() => {
+    _redrawTimer = null;
+    _redrawPending = false;
+    redrawWall(pane);
+  }, 16);  // ~60fps cap on canvas redraws
+}
 function applySnapshot(snap, pane) {
   pane = pane || 'tile';
 
@@ -2199,7 +2598,7 @@ function applySnapshot(snap, pane) {
     state.pane.heatmap2 = _bus_to_heatmap_decayed_pane(state.pane.bus2, state.pane.views2, 'pane');
     const s2 = document.getElementById('pane2-status');
     if (s2) s2.textContent = 't=' + state.pane.tick2 + ' ' + (state.pane.running2 ? 'LIVE' : 'PAUSED');
-    redrawWall('tile2');
+    _scheduleRedraw('tile2');
     return;
   }
 
@@ -2237,6 +2636,28 @@ function applySnapshot(snap, pane) {
       state.recording = false;
       document.getElementById('record-btn').classList.remove('recording');
       _finalizeRecording();
+    }
+  }
+
+  // iter 45: wire playing/paused state from server
+  if (snap.paused) {
+    _setPlayingUI(false);
+  }
+  if (snap.playing !== undefined && snap.playing !== null) {
+    _setPlayingUI(!!snap.playing);
+  }
+
+  // iter 45: check WS acks for play/pause/step/reset
+  if (snap.ack === 'play') _setPlayingUI(true);
+  if (snap.ack === 'pause') _setPlayingUI(false);
+  if (snap.ack === 'step' || snap.ack === 'reset') {
+    // apply the snapshot from the step/reset response
+    if (snap.snapshot) {
+      // full snapshot embedded in ack
+      const s = snap.snapshot;
+      state.tick = s.t ?? state.tick;
+      state.bus = s.bus ?? state.bus;
+      state.series = s.series ?? state.series;
     }
   }
 
@@ -2387,6 +2808,103 @@ function _adjustSpeed(delta) {
 
 document.getElementById('tap-btn').addEventListener('click', _doTap);
 
+// iter 45: play/pause/step/reset UI wiring
+const _playBtn = document.getElementById('play-btn');
+const _stepBtn = document.getElementById('step-btn');
+
+function _setPlayingUI(playing) {
+  state.playing = playing;
+  if (_playBtn) {
+    _playBtn.textContent = playing ? 'PAUSE' : 'PLAY';
+    _playBtn.classList.toggle('recording', !playing);
+  }
+}
+
+_playBtn.addEventListener('click', () => {
+  const want = !state.playing;
+  _setPlayingUI(want);
+  // Prefer WS (lower latency, ack), fall back to REST
+  if (state.ws && state.connected) {
+    state.ws.send(JSON.stringify({ type: want ? 'play' : 'pause' }));
+  } else {
+    fetch('/api/control/' + state.name, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ playing: want }),
+    }).catch(() => {});
+  }
+});
+
+_stepBtn.addEventListener('click', () => {
+  // pause first so step doesn't get drowned out by the running loop
+  if (state.playing) {
+    _setPlayingUI(false);
+    if (state.ws && state.connected) {
+      state.ws.send(JSON.stringify({ type: 'pause' }));
+    }
+  }
+  if (state.ws && state.connected) {
+    state.ws.send(JSON.stringify({ type: 'step' }));
+  } else {
+    fetch('/api/batch/' + state.name, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ ticks: 1 }),
+    }).catch(() => {});
+  }
+});
+
+// iter 45: live feed bar (per-tick param injection)
+// Parse "module.key=value" (or multiple comma-sep) and send via /api/feed
+function _sendLiveFeed() {
+  const tickEl = document.getElementById('feed-tick-in');
+  const paramEl = document.getElementById('feed-param-in');
+  const statusEl = document.getElementById('feed-status');
+  const tick = parseInt(tickEl.value || '0');
+  const expr = paramEl.value.trim();
+  if (!expr) {
+    statusEl.textContent = 'no params';
+    return;
+  }
+  const params = {};
+  for (const part of expr.split(',')) {
+    const m = /^([\w-]+)\.([\w-]+)\s*=\s*(-?\d+(?:\.\d+)?)$/.exec(part.trim());
+    if (!m) continue;
+    const [, mid, k, v] = m;
+    if (!params[mid]) params[mid] = {};
+    params[mid][k] = parseFloat(v);
+  }
+  if (!Object.keys(params).length) {
+    statusEl.textContent = 'parse failed (use mod.key=value)';
+    return;
+  }
+  const payload = { ticks: [tick], params: params };
+  if (state.ws && state.connected) {
+    state.ws.send(JSON.stringify({ type: 'feed', ticks: [tick], params: params }));
+    statusEl.textContent = 'sent via WS';
+  } else {
+    fetch('/api/feed/' + state.name, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    }).then(r => r.json()).then(d => {
+      statusEl.textContent = 'sent (' + (d.applied || 0) + ' ticks)';
+    }).catch(e => {
+      statusEl.textContent = 'error: ' + e.message;
+    });
+  }
+}
+document.getElementById('feed-send-btn').addEventListener('click', _sendLiveFeed);
+document.getElementById('feed-param-in').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); _sendLiveFeed(); }
+});
+
+// iter 45: show feed bar whenever a WS connects + hide it when disconnected
+function _setLiveFeedVisible(visible) {
+  const bar = document.getElementById('live-feed-bar');
+  if (bar) bar.style.display = visible ? 'flex' : 'none';
+}
+
 const speedSlider = document.getElementById('speed-slider');
 const speedVal = document.getElementById('speed-val');
 speedSlider.value = state.speed;
@@ -2440,7 +2958,9 @@ document.addEventListener('keydown', (e) => {
   const tag = e.target.tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
   if (e.key === ' ') { e.preventDefault(); _doTap(); }
-  else if (e.key === 'r' || e.key === 'R') _doReset();
+  else if (e.key === 'r' || e.key === 'R') _doReset()
+  else if (e.key === 'p' || e.key === 'P') { e.preventDefault(); _playBtn.click(); }  // iter 45: play/pause
+  else if (e.key === '.') { e.preventDefault(); _stepBtn.click(); }                    // iter 45: step
   else if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '=')) {
     e.preventDefault(); zoomBy(0.1);
   }
@@ -2469,21 +2989,21 @@ document.addEventListener('keydown', (e) => {
 _refreshPresetSelect();
 document.getElementById('preset-select').addEventListener('change', (e) => {
   const name = e.target.value;
-  if (name) loadPreset(name);
+  if (name) _loadServerPreset(name);
   e.target.value = '';
 });
 document.getElementById('preset-save-btn').addEventListener('click', () => {
   const inp = document.getElementById('preset-name');
-  savePreset(inp.value);
+  _saveServerPreset(inp.value);
   inp.value = '';
 });
 document.getElementById('preset-load-btn').addEventListener('click', () => {
   const name = document.getElementById('preset-select').value;
-  if (name) loadPreset(name);
+  if (name) _loadServerPreset(name);
 });
 document.getElementById('preset-del-btn').addEventListener('click', () => {
   const name = document.getElementById('preset-select').value;
-  if (name) deletePreset(name);
+  if (name) _deleteServerPreset(name);
 });
 
 // ── Record / Replay (iter 4) ────────────────────────────────────────────
@@ -2646,10 +3166,19 @@ setupZoom();
 document.getElementById('program-name').textContent = state.name;
 updateGroupBadges('tile');
 _refreshPresetSelect();
+
+// iter 45: single boot — load programs, then start WS (not polling fetch loop)
+// The WS drives tick_once() at the configured dt; no duplicate startLoop/connectWS.
+// iter 47: shell-first boot. Render framebuffers + open WS IMMEDIATELY so
+// the UI is responsive before any program is loaded. The program dropdown,
+// presets, and feed controls populate in the background.
+connectWS(state.name, 'tile');
 _loadPrograms().then(async () => {
   await refreshProgramSwitcher();
-  startLoop();
-  connectWS(state.name, 'tile');
+  await _fetchServerPresets();   // iter 46: server-side preset store
+  await _refreshPresetSelect();
+  if (window.checkSlopProgram) window.checkSlopProgram();
+  if (window.checkIvlProgram) window.checkIvlProgram();
 });
 const _accentPicker = document.getElementById('accent-picker');
 if (_accentPicker) {
@@ -2684,8 +3213,9 @@ document.getElementById('sweep-replay-btn').addEventListener('click', () => {
   else _startSweepReplay();
 });
 document.getElementById('sweep-stop-btn').addEventListener('click', _stopSweepReplay);
-startLoop();
-connectWS(state.name, 'tile');
+
+// iter 45: REMOVED — double startLoop()/connectWS() caused duplicate WS connections
+// and double polling loops. Boot is now single-call in _loadPrograms().then().
 
 // ── iter 33: feed_video controls ─────────────────────────────────────────────
 (function() {
@@ -2842,7 +3372,376 @@ connectWS(state.name, 'tile');
     setTimeout(() => {
       state.name = name;
       checkFeedVideoProgram();
+      if (window.checkSlopProgram) window.checkSlopProgram();
+      if (window.checkIvlProgram) window.checkIvlProgram();
     }, 100);
   };
 })();
 
+// ── iter 46: infinite slop loop control bar ─────────────────────────────────
+(function() {
+  const SLOP_WS_PATH = '/ws/slop/';
+  const controls = document.getElementById('slop-controls');
+  const startBtn = document.getElementById('slop-start-btn');
+  const stopBtn = document.getElementById('slop-stop-btn');
+  const evolveBtn = document.getElementById('slop-evolve-btn');
+  const statusEl = document.getElementById('slop-status');
+
+  let slopWs = null;
+  let slopWsName = null;
+  let slopActive = false;
+
+  function setSlopState(running) {
+    slopActive = running;
+    startBtn.disabled = running;
+    stopBtn.disabled = !running;
+    evolveBtn.disabled = !running;
+    statusEl.textContent = running ? 'streaming' : 'idle';
+  }
+
+  function showSlopUI() { if (controls) controls.style.display = 'flex'; }
+  function hideSlopUI() { if (controls) controls.style.display = 'none'; }
+
+  function checkSlopProgram() {
+    if (state.name === 'infinite_slop_loop' || state.name === 'infinite_slop_bicameral') {
+      showSlopUI();
+    } else {
+      hideSlopUI();
+      if (slopWs) { slopWs.close(); slopWs = null; }
+      setSlopState(false);
+    }
+  }
+
+  startBtn.addEventListener('click', async () => {
+    const name = state.name;
+    if (name === 'infinite_slop_bicameral') {
+      // For bicameral, route through the ivl/slop pipeline (TODO: bicameral slop)
+      statusEl.textContent = 'use IVL bar for bicameral';
+      return;
+    }
+    const width = parseInt(document.getElementById('slop-width').value) || 64;
+    const height = parseInt(document.getElementById('slop-height').value) || 64;
+    const promptsRaw = document.getElementById('slop-prompts').value || '';
+    const prompts = promptsRaw.split(',').map(s => s.trim()).filter(Boolean);
+    const fitness = document.getElementById('slop-fitness').value;
+    const seed = parseInt(document.getElementById('slop-seed').value) || 0;
+
+    let r;
+    try {
+      r = await fetch('/api/slop/' + name + '/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ width, height, prompts, fitness, seed, max_ticks: 1000 }),
+      });
+    } catch(e) {
+      statusEl.textContent = 'error: ' + e.message;
+      return;
+    }
+    if (!r.ok) {
+      statusEl.textContent = 'start failed';
+      return;
+    }
+    const d = await r.json();
+    statusEl.textContent = 'starting (' + (d.h3_kind || 'H3Stub') + ')...';
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = proto + '//' + location.host + SLOP_WS_PATH + name;
+    if (slopWs) slopWs.close();
+    slopWsName = name;
+    slopWs = new WebSocket(wsUrl);
+
+    slopWs.addEventListener('open', () => {
+      setSlopState(true);
+      statusEl.textContent = 'streaming (' + (d.h3_kind || 'H3Stub') + ')';
+    });
+
+    slopWs.addEventListener('message', ev => {
+      try {
+        const snap = JSON.parse(ev.data);
+        applySnapshot(snap, 'tile');
+        if (snap._slop_stats) {
+          const ss = snap._slop_stats;
+          statusEl.textContent = 'gen=' + (ss.evolver_gen || 0) +
+            ' frames=' + (ss.frames_generated || 0) +
+            ' score=' + (ss.latest_score || 0).toFixed(2);
+        }
+      } catch(e) {}
+    });
+
+    slopWs.addEventListener('close', () => {
+      setSlopState(false);
+      statusEl.textContent = 'stopped';
+      if (slopWsName === name) slopWs = null;
+    });
+
+    slopWs.addEventListener('error', () => {
+      statusEl.textContent = 'WS error';
+      setSlopState(false);
+    });
+  });
+
+  stopBtn.addEventListener('click', async () => {
+    const name = slopWsName || state.name;
+    if (slopWs) { slopWs.close(); slopWs = null; }
+    setSlopState(false);
+    try {
+      await fetch('/api/slop/' + name + '/stop', {method: 'POST'});
+    } catch(e) {}
+    statusEl.textContent = 'stopped';
+  });
+
+  evolveBtn.addEventListener('click', async () => {
+    const name = state.name;
+    try {
+      const r = await fetch('/api/slop/' + name + '/evolve', {method: 'POST'});
+      const d = await r.json();
+      if (d.ok) {
+        statusEl.textContent = 'evolved gen=' + d.gen;
+      }
+    } catch(e) {
+      statusEl.textContent = 'evolve err: ' + e.message;
+    }
+  });
+
+  window.checkSlopProgram = checkSlopProgram;
+  checkSlopProgram();
+})();
+
+// ── iter 46: IVL control bar (infinite_video_bicameral) ─────────────────────
+(function() {
+  const IVL_WS_PATH = '/ws/ivl/';
+  const controls = document.getElementById('ivl-controls');
+  const startBtn = document.getElementById('ivl-start-btn');
+  const stopBtn = document.getElementById('ivl-stop-btn');
+  const statusEl = document.getElementById('ivl-status');
+
+  let ivlWs = null;
+  let ivlWsName = null;
+  let ivlActive = false;
+
+  function setIvlState(running) {
+    ivlActive = running;
+    startBtn.disabled = running;
+    stopBtn.disabled = !running;
+    statusEl.textContent = running ? 'streaming' : 'idle';
+  }
+
+  function showIvlUI() { if (controls) controls.style.display = 'flex'; }
+  function hideIvlUI() { if (controls) controls.style.display = 'none'; }
+
+  function checkIvlProgram() {
+    if (state.name === 'infinite_video_bicameral' ||
+        state.name === 'infinite_video_export' ||
+        state.name === 'infinite_fasth3_bicameral') {
+      showIvlUI();
+    } else {
+      hideIvlUI();
+      if (ivlWs) { ivlWs.close(); ivlWs = null; }
+      setIvlState(false);
+    }
+  }
+
+  startBtn.addEventListener('click', async () => {
+    const name = state.name;
+    const effect = document.getElementById('ivl-effect').value;
+    const h3_url = document.getElementById('ivl-h3-url').value || '';
+    const width = parseInt(document.getElementById('ivl-width').value) || 64;
+    const height = parseInt(document.getElementById('ivl-height').value) || 64;
+
+    let r;
+    try {
+      r = await fetch('/api/ivl/' + name + '/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ effect, h3_url, width, height, max_ticks: 1000 }),
+      });
+    } catch(e) {
+      statusEl.textContent = 'error: ' + e.message;
+      return;
+    }
+    if (!r.ok) {
+      statusEl.textContent = 'start failed';
+      return;
+    }
+    const d = await r.json();
+    statusEl.textContent = 'starting (' + (d.source_kind || '?') + ')...';
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = proto + '//' + location.host + IVL_WS_PATH + name;
+    if (ivlWs) ivlWs.close();
+    ivlWsName = name;
+    ivlWs = new WebSocket(wsUrl);
+
+    ivlWs.addEventListener('open', () => {
+      setIvlState(true);
+      statusEl.textContent = 'streaming';
+    });
+
+    ivlWs.addEventListener('message', ev => {
+      try {
+        const snap = JSON.parse(ev.data);
+        applySnapshot(snap, 'tile');
+        if (snap._ivl_frame) {
+          const f = snap._ivl_frame;
+          statusEl.textContent = 't=' + f.t + ' "' + (f.prompt || '').slice(0, 24) + '"';
+        }
+      } catch(e) {}
+    });
+
+    ivlWs.addEventListener('close', () => {
+      setIvlState(false);
+      statusEl.textContent = 'stopped';
+      if (ivlWsName === name) ivlWs = null;
+    });
+
+    ivlWs.addEventListener('error', () => {
+      statusEl.textContent = 'WS error';
+      setIvlState(false);
+    });
+  });
+
+  stopBtn.addEventListener('click', async () => {
+    const name = ivlWsName || state.name;
+    if (ivlWs) { ivlWs.close(); ivlWs = null; }
+    setIvlState(false);
+    try {
+      await fetch('/api/ivl/' + name + '/stop', {method: 'POST'});
+    } catch(e) {}
+    statusEl.textContent = 'stopped';
+  });
+
+  checkIvlProgram();
+})();
+
+// ── iter 46: H3 server lifecycle controls ──────────────────────────────────
+(function() {
+  const controls = document.getElementById('h3-server-controls');
+  const startBtn = document.getElementById('h3-start-btn');
+  const stopBtn = document.getElementById('h3-stop-btn');
+  const statusBtn = document.getElementById('h3-status-btn');
+  const statusEl = document.getElementById('h3-server-status');
+
+  async function refreshStatus() {
+    const port = parseInt(document.getElementById('h3-port').value) || 8765;
+    try {
+      const r = await fetch('/api/video/status?port=' + port);
+      const d = await r.json();
+      const running = d.status === 'running';
+      startBtn.disabled = running;
+      stopBtn.disabled = !running;
+      statusEl.textContent = 'port=' + port + ' status=' + (d.status || '?');
+    } catch(e) {
+      statusEl.textContent = 'status err: ' + e.message;
+    }
+  }
+
+  startBtn.addEventListener('click', async () => {
+    const port = parseInt(document.getElementById('h3-port').value) || 8765;
+    statusEl.textContent = 'starting...';
+    try {
+      const r = await fetch('/api/video/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ port, width: 64, height: 64, n_frames: 1 }),
+      });
+      const d = await r.json();
+      statusEl.textContent = 'start: ' + JSON.stringify(d).slice(0, 80);
+      refreshStatus();
+    } catch(e) {
+      statusEl.textContent = 'start err: ' + e.message;
+    }
+  });
+
+  stopBtn.addEventListener('click', async () => {
+    const port = parseInt(document.getElementById('h3-port').value) || 8765;
+    try {
+      const r = await fetch('/api/video/stop', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ port }),
+      });
+      const d = await r.json();
+      statusEl.textContent = 'stopped: ' + JSON.stringify(d).slice(0, 60);
+      refreshStatus();
+    } catch(e) {
+      statusEl.textContent = 'stop err: ' + e.message;
+    }
+  });
+
+  statusBtn.addEventListener('click', refreshStatus);
+
+  // Auto-poll status every 5s
+  setInterval(refreshStatus, 5000);
+  refreshStatus();
+})();
+
+// ── iter 46: JFin scheduler controls ───────────────────────────────────────
+(function() {
+  const controls = document.getElementById('jfin-controls');
+  const discoverBtn = document.getElementById('jfin-discover-btn');
+  const channelsBtn = document.getElementById('jfin-channels-btn');
+  const exportersBtn = document.getElementById('jfin-exporters-btn');
+  const rotateBtn = document.getElementById('jfin-rotate-btn');
+  const statusEl = document.getElementById('jfin-status');
+
+  discoverBtn.addEventListener('click', async () => {
+    statusEl.textContent = 'discovering...';
+    try {
+      const r = await fetch('/api/jfin/discover?timeout=1.0');
+      const d = await r.json();
+      statusEl.textContent = 'devices=' + (d.count || 0) + ' (' + (d.elapsed_s || 0) + 's)';
+    } catch(e) {
+      statusEl.textContent = 'discover err: ' + e.message;
+    }
+  });
+
+  channelsBtn.addEventListener('click', async () => {
+    try {
+      const r = await fetch('/api/jfin/channels');
+      const d = await r.json();
+      statusEl.textContent = 'channels=' + (d.count || 0);
+    } catch(e) {
+      statusEl.textContent = 'channels err: ' + e.message;
+    }
+  });
+
+  exportersBtn.addEventListener('click', async () => {
+    try {
+      const r = await fetch('/api/jfin/exporters');
+      const d = await r.json();
+      statusEl.textContent = 'exporters=' + (d.exporters ? Object.keys(d.exporters).length : 0);
+    } catch(e) {
+      statusEl.textContent = 'exporters err: ' + e.message;
+    }
+  });
+
+  rotateBtn.addEventListener('click', async () => {
+    const programs = ['jfin_export_demo', 'infinite_video_export'];
+    try {
+      const r = await fetch('/api/jfin/rotate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ programs, mode: 'round_robin' }),
+      });
+      const d = await r.json();
+      statusEl.textContent = 'rotated: ' + JSON.stringify(d).slice(0, 80);
+    } catch(e) {
+      statusEl.textContent = 'rotate err: ' + e.message;
+    }
+  });
+})();
+
+// ── iter 46: SYSTEM button toggles H3 server + JFin bars ───────────────────
+document.getElementById('system-btn').addEventListener('click', () => {
+  const h3 = document.getElementById('h3-server-controls');
+  const jfin = document.getElementById('jfin-controls');
+  const show = h3 && h3.style.display === 'none';
+  if (h3) h3.style.display = show ? 'flex' : 'none';
+  if (jfin) jfin.style.display = show ? 'flex' : 'none';
+  const btn = document.getElementById('system-btn');
+  if (btn) btn.classList.toggle('active', show);
+});
+
+ </script>
+</body>
+</html>

@@ -5,8 +5,8 @@ runner.  The UI is a pure-web client (HTML5 canvas per tile) that
 connects to the server via WebSocket or REST for live tick streaming.
 
 Run:
-    python -m atomic.ui [--port 18094]
-    uvicorn atomic.ui:app --port 18094 --host 0.0.0.0
+    python -m atomic.ui [--port 18093]
+    uvicorn atomic.ui:app --port 18093 --host 0.0.0.0
 """
 from .bicameral_viewer import BicameralViewer
 from .server import app
@@ -17,14 +17,14 @@ __all__ = ["app", "Viewer", "BicameralViewer", "build", "all_programs",
            "build_bicameral", "all_bicameral_programs"]
 
 
-def run_server(host: str = "0.0.0.0", port: int = 18094):
+def run_server(host: str = "0.0.0.0", port: int = 18093):
     import uvicorn
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 if __name__ == "__main__":
     import sys
-    port = 18094
+    port = 18093
     for a in sys.argv[1:]:
         if a.isdigit():
             port = int(a)

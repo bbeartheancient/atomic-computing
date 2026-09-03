@@ -4771,31 +4771,31 @@ def s35_checks():
                    te38_stash_load_round_trip))
 
     def te38_workflow_loadh3te38_path():
-        """te38_cond_path forces LoadH3TE38Conditioning, not H3TextEncode8."""
+        """te38_cond_path forces LoadH3TE38Conditioning, not H3SmallTextEncoder."""
         wf = fasth3_workflow_te38("a comet", cond_path="/a/b/test.pt")
         classes = {n["class_type"] for n in wf["prompt"].values()}
         assert H3_TE38_COND_NODE in classes
-        assert "H3TextEncode8" not in classes
+        assert "H3SmallTextEncoder" not in classes
         # The te38 cond node has the path input
         for node in wf["prompt"].values():
             if node["class_type"] == H3_TE38_COND_NODE:
                 assert node["inputs"]["path"] == "/a/b/test.pt"
-        # Negative is EmptyConditioning
+        # Negative is ConditioningZeroOut (iter-43; was EmptyConditioning)
         negs = [n for n in wf["prompt"].values()
-                if n["class_type"] == "EmptyConditioning"]
+                if n["class_type"] == "ConditioningZeroOut"]
         assert len(negs) == 1
         assert wf.get("_te38") is True
-    checks.append(("TE-38: workflow uses LoadH3TE38Conditioning + EmptyConditioning",
+    checks.append(("TE-38: workflow uses LoadH3TE38Conditioning + ConditioningZeroOut",
                    te38_workflow_loadh3te38_path))
 
     def te38_workflow_iter38_path_preserved():
-        """Without te38_cond_path, the workflow uses H3TextEncode8 (iter-38)."""
+        """Without te38_cond_path, the workflow uses H3SmallTextEncoder (iter-43)."""
         wf = fasth3_workflow("a comet", seed=0)
         classes = {n["class_type"] for n in wf["prompt"].values()}
-        assert "H3TextEncode8" in classes
+        assert "H3SmallTextEncoder" in classes
         assert H3_TE38_COND_NODE not in classes
         assert wf.get("_te38") is False
-    checks.append(("TE-38: workflow WITHOUT cond_path uses H3TextEncode8 (iter-38)",
+    checks.append(("TE-38: workflow WITHOUT cond_path uses H3SmallTextEncoder (iter-43)",
                    te38_workflow_iter38_path_preserved))
 
     def te38_summary_paths():
@@ -4892,7 +4892,7 @@ def s35_checks():
 
     def te38_fasth3client_te_adapter_failure_falls_back():
         """When the te_adapter encode fails AND te_adapter_auto=True,
-        the client falls back to the iter-38 wire (H3TextEncode8) and
+        the client falls back to the iter-43 wire (H3SmallTextEncoder) and
         the fallback counter goes up."""
         class BrokenTE:
             def encode_cached(self, prompt):
@@ -5164,10 +5164,10 @@ def s35_checks():
         """
         captured = {}
         def cond_path_check(payload):
-            # When te_path falls back to iter-38, the workflow uses
-            # H3TextEncode8 (not LoadH3TE38Conditioning).
+            # When te_path falls back to iter-43, the workflow uses
+            # H3SmallTextEncoder (not LoadH3TE38Conditioning).
             classes = [n.get("class_type") for n in payload["prompt"].values()]
-            assert "H3TextEncode8" in classes
+            assert "H3SmallTextEncoder" in classes
             assert "LoadH3TE38Conditioning" not in classes
             captured["te38_flag"] = payload.get("_te38", None)
         srv = _start_mock(cond_path_check=cond_path_check)
@@ -5442,8 +5442,391 @@ def s36_checks():
     return checks
 
 
+# ---------------------------------------------------------------- 37 iter44
+def s37_checks():
+    """Iter 44: end-to-end ComfyUI vsa no-stub (FastH3 happy path).
+
+    Verifies the iter-44 fix: the SolAttnXPU custom node's
+    `_make_attn_forward` accepts the kwargs the H3 DiT passes
+    (rope_freqs, transformer_options) and pins the original
+    `attn.forward` via a `stock_forward` partial-kwarg.
+
+    Live sections (comfyui_up, no_fallback_64x64, vsa_off_64x64) skip
+    when ComfyUI vsa is unreachable, so the section is always green
+    in CI / when GPU1 is offline.
+
+    The static parts (signature pin, fixture presence) always run.
+    """
+    import os as _os
+    import pickle as _pk
+    from atomic.fasth3_server import (
+        is_comfyui_up as _is_comfyui_up,
+        fasth3_workflow as _fasth3_workflow,
+    )
+    COMFY_HOST = "127.0.0.1"
+    COMFY_PORT = int(_os.environ.get("ITER44_COMFYUI_PORT", "8189"))
+    FIXTURE_DIR = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+        "tests", "fixtures",
+    )
+    FIXTURE_PKL = _os.path.join(FIXTURE_DIR, "iter44_real_h3_frame.pkl")
+    FIXTURE_QBF = _os.path.join(FIXTURE_DIR, "iter44_real_h3_trace.qbf")
+
+    checks = []
+
+    def comfyui_up():
+        return _is_comfyui_up(host=COMFY_HOST, port=COMFY_PORT, timeout=1.0)
+
+    def workflow_has_sol_node_when_vsa():
+        wf = _fasth3_workflow(prompt="x", vsa=True)
+        has_sol = any(
+            n.get("class_type", "") == "SolAttnXPUVSA"
+            for n in wf["prompt"].values()
+        )
+        assert has_sol, "SolAttnXPUVSA missing from vsa=True workflow"
+
+    checks.append(("fasth3_workflow: SolAttnXPUVSA node present when vsa=True",
+                   workflow_has_sol_node_when_vsa))
+
+    def workflow_no_sol_node_when_vsa_off():
+        wf = _fasth3_workflow(prompt="x", vsa=False)
+        has_sol = any(
+            n.get("class_type", "") == "SolAttnXPUVSA"
+            for n in wf["prompt"].values()
+        )
+        assert not has_sol, "SolAttnXPUVSA must not appear in vsa=False"
+
+    checks.append(("fasth3_workflow: no SolAttnXPUVSA when vsa=False",
+                   workflow_no_sol_node_when_vsa_off))
+
+    def workflow_ksampler_wired_to_sol():
+        """KSamplerAdvanced must read the SolAttnXPU-wrapped model
+        (not the raw UNet). This is the iter-44 wire contract."""
+        wf = _fasth3_workflow(prompt="x", vsa=True)
+        ksampler = next(n for n in wf["prompt"].values()
+                        if n["class_type"] == "KSamplerAdvanced")
+        model_src = ksampler["inputs"]["model"][0]
+        assert model_src == "sol", \
+            "KSamplerAdvanced must consume sol, got %r" % model_src
+
+    checks.append(("workflow: KSamplerAdvanced wired to sol (VSA-wrapped model)",
+                   workflow_ksampler_wired_to_sol))
+
+    def fixture_pkl_present():
+        assert _os.path.isfile(FIXTURE_PKL), \
+            "missing iter44 fixture: %s" % FIXTURE_PKL
+        with open(FIXTURE_PKL, "rb") as f:
+            d = _pk.load(f)
+        assert d["width"] == 64
+        assert d["height"] == 64
+        assert len(d["rgba"]) == 64 * 64 * 4
+        assert d.get("vsa"), "fixture must be from the VSA path"
+        non_zero = sum(1 for b in d["rgba"] if b != 0)
+        assert non_zero > 100, "fixture is mostly zero (likely stub)"
+
+    checks.append(("iter44 fixture pickle: real 64x64 RGBA VSA frame",
+                   fixture_pkl_present))
+
+    def fixture_qbf_present():
+        if not _os.path.isfile(FIXTURE_QBF):
+            print("  (QBF fixture missing; skipped; expected after a live run)",
+                  file=__import__("sys").stderr)
+            return
+        from atomic import QbfTraceStore as _QbfTraceStore
+        store = _QbfTraceStore(FIXTURE_QBF)
+        try:
+            d = store.load_run(0)
+            assert d["manifest"]["n_video"] == 1
+            assert d["video"][0]["width"] == 64
+            assert len(d["video"][0]["rgba"]) == 64 * 64 * 4
+        finally:
+            store.close()
+
+    checks.append(("iter44 fixture QBF: load_run(0) returns real frame",
+                   fixture_qbf_present))
+
+    def no_fallback_64x64():
+        if not comfyui_up():
+            print("  (ComfyUI vsa not reachable, skipping live no-fallback test)")
+            return
+        from atomic import FastH3Client as _FastH3Client
+        c = _FastH3Client(
+            endpoint="http://%s:%d" % (COMFY_HOST, COMFY_PORT),
+            fallback=None,    # the iter-44 contract: no stub fallback
+            steps=1, vsa=True, vsa_keep=10,
+            mode="comfyui",
+        )
+        r = c.generate("a comet over the ocean at sunset",
+                       seed=42, width=64, height=64)
+        assert r["width"] == 64
+        assert r["height"] == 64
+        assert len(r["frames"]) == 1
+        assert len(r["frames"][0]) == 64 * 64 * 4
+        assert r.get("model") == "FastH3"
+        assert r.get("view_filename", "").startswith("atomic_"), \
+            "view_filename %r is not a ComfyUI output" % r.get("view_filename")
+        assert r["h3_latency_ms"] > 50.0, \
+            "latency %.1fms is too low for real diffusion" % r["h3_latency_ms"]
+
+    checks.append(("FastH3Client no-fallback: real 64x64 RGBA from ComfyUI vsa",
+                   no_fallback_64x64))
+
+    def vsa_off_64x64():
+        if not comfyui_up():
+            print("  (ComfyUI vsa not reachable, skipping live vsa-off test)")
+            return
+        from atomic import FastH3Client as _FastH3Client
+        c = _FastH3Client(
+            endpoint="http://%s:%d" % (COMFY_HOST, COMFY_PORT),
+            fallback=None, steps=1, vsa=False, mode="comfyui",
+        )
+        r = c.generate("a comet", seed=7, width=64, height=64)
+        assert r["width"] == 64
+        assert len(r["frames"]) == 1
+        assert len(r["frames"][0]) == 64 * 64 * 4
+        assert r.get("vsa") is False
+        assert r.get("view_filename", "").startswith("atomic_")
+
+    checks.append(("FastH3Client no-fallback: vsa=False path produces 64x64",
+                   vsa_off_64x64))
+
+    return checks
+
+
+def s38_checks():
+    """Iter 45: UI responsiveness — play/pause/step/reset REST + WS, tap, feed, canvas throttling.
+
+    Root cause of prior unresponsiveness:
+    - startLoop() called twice (script end + .then boot block) → two polling loops
+    - connectWS() called twice → two WS connections streaming at 30fps
+    - No play/pause → engine ticked continuously, no idle
+    - No canvas redraw throttle → 30 full-wall redraws/sec, all 16 tiles, every tick
+    - feed message not wired in HTML → WS msg handler existed but client never sent it
+
+    Fixes:
+    - Single startLoop() + connectWS() in .then() boot block
+    - Play/Pause/Step buttons → server-side _playing flag
+    - WS heartbeat at dt when paused (so connection stays alive)
+    - 16ms canvas redraw throttle (requestAnimationFrame budget)
+    - /api/control/{name} POST: playing/reset controls
+    - WS msg types: play, pause, step, reset, feed (wired from HTML)
+    - Live feed bar for per-tick param injection
+    """
+    checks = []
+
+    def fresh_registry():
+        from atomic.ui.viewer import Viewer
+        from atomic.ui.bicameral_viewer import BicameralViewer
+        Viewer._registry.clear()
+        BicameralViewer._registry.clear()
+
+    def ws_tick_loop(ws, n=5):
+        """Consume n tick snapshots from a WS."""
+        for _ in range(n):
+            ws.receive_json()
+
+    def ws_send(ws, msg):
+        ws.send_json(msg)
+        return ws.receive_json()
+
+    def ws_pause_freezes_tick():
+        fresh_registry()
+        from fastapi.testclient import TestClient
+        from atomic.ui.server import create_app
+        with TestClient(create_app()) as c:
+            with c.websocket_connect("/ws/hadamard_wxyz") as ws:
+                ws_tick_loop(ws, 3)
+                snap = ws.receive_json()
+                t_before = snap["t"]
+                ack = ws_send(ws, {"type": "pause"})
+                assert ack.get("ack") == "pause", ack
+                assert ack.get("playing") is False, ack
+                # 3 more ticks while paused — should all have same t + paused=True
+                frozen = []
+                for _ in range(3):
+                    s = ws.receive_json()
+                    frozen.append((s.get("t"), s.get("paused")))
+                assert all(t == t_before for t, _ in frozen), \
+                    f"tick should freeze during pause: {frozen}"
+                assert all(p is True for _, p in frozen), \
+                    f"all should have paused=True: {frozen}"
+
+    checks.append(("WS pause: tick freezes, heartbeat sent with paused=True",
+                   ws_pause_freezes_tick))
+
+    def ws_play_resumes():
+        fresh_registry()
+        from fastapi.testclient import TestClient
+        from atomic.ui.server import create_app
+        with TestClient(create_app()) as c:
+            with c.websocket_connect("/ws/hadamard_wxyz") as ws:
+                ws_tick_loop(ws, 2)
+                ack = ws_send(ws, {"type": "pause"})
+                ws_tick_loop(ws, 2)
+                ack = ws_send(ws, {"type": "play"})
+                assert ack.get("ack") == "play", ack
+                assert ack.get("playing") is True, ack
+                t0 = ws.receive_json()["t"]
+                t1 = ws.receive_json()["t"]
+                assert t1 > t0, "tick should advance after play"
+
+    checks.append(("WS play: tick resumes after pause", ws_play_resumes))
+
+    def ws_step_advances_one():
+        fresh_registry()
+        from fastapi.testclient import TestClient
+        from atomic.ui.server import create_app
+        with TestClient(create_app()) as c:
+            with c.websocket_connect("/ws/hadamard_wxyz") as ws:
+                ws_tick_loop(ws, 3)
+                ws_send(ws, {"type": "pause"})
+                ws_tick_loop(ws, 2)
+                snap_before = ws.receive_json()
+                t_before = snap_before["t"]
+                ack = ws_send(ws, {"type": "step"})
+                assert ack.get("ack") == "step", ack
+                snap = ack.get("snapshot", {})
+                assert snap.get("t") == t_before + 1, \
+                    f"step should advance exactly 1 tick, got {snap.get('t')} vs {t_before}"
+
+    checks.append(("WS step: exactly 1 tick advance + snapshot in ack",
+                   ws_step_advances_one))
+
+    def ws_reset_zeros_engine():
+        fresh_registry()
+        from fastapi.testclient import TestClient
+        from atomic.ui.server import create_app
+        with TestClient(create_app()) as c:
+            with c.websocket_connect("/ws/hadamard_wxyz") as ws:
+                ws_tick_loop(ws, 10)
+                ack = ws_send(ws, {"type": "reset"})
+                assert ack.get("ack") == "reset", ack
+                snap = ack.get("snapshot", {})
+                assert snap.get("t") == 0, f"reset should set t=0, got {snap.get('t')}"
+                assert snap.get("bus") == {} or len(snap.get("bus", {})) == 0
+
+    checks.append(("WS reset: engine t=0 + cleared bus", ws_reset_zeros_engine))
+
+    def rest_control_pause_resume():
+        fresh_registry()
+        from fastapi.testclient import TestClient
+        from atomic.ui.server import create_app
+        with TestClient(create_app()) as c:
+            r = c.post("/api/control/hadamard_wxyz", json={"playing": False})
+            assert r.status_code == 200, r.json()
+            d = r.json()
+            assert d.get("playing") is False, d
+
+            r = c.post("/api/control/hadamard_wxyz", json={"playing": True})
+            assert r.status_code == 200, r.json()
+            d = r.json()
+            assert d.get("playing") is True, d
+
+    checks.append(("REST POST /api/control: pause/resume playing state",
+                   rest_control_pause_resume))
+
+    def rest_reset():
+        fresh_registry()
+        from fastapi.testclient import TestClient
+        from atomic.ui.server import create_app
+        with TestClient(create_app()) as c:
+            c.post("/api/batch/hadamard_wxyz", json={"ticks": 10})
+            r = c.post("/api/control/hadamard_wxyz", json={"reset": True})
+            assert r.status_code == 200, r.json()
+            d = r.json()
+            assert d.get("t") == 0, f"reset should set t=0, got {d.get('t')}"
+
+    checks.append(("REST POST /api/control: reset clears engine state",
+                   rest_reset))
+
+    def rest_tap():
+        fresh_registry()
+        from fastapi.testclient import TestClient
+        from atomic.ui.server import create_app
+        with TestClient(create_app()) as c:
+            r = c.post("/api/tap/hadamard_wxyz")
+            assert r.status_code == 200, r.json()
+            assert r.json().get("ok") is True, r.json()
+
+    checks.append(("REST POST /api/tap: fires and returns ack",
+                   rest_tap))
+
+    def rest_feed_mutates():
+        fresh_registry()
+        from fastapi.testclient import TestClient
+        from atomic.ui.server import create_app
+        with TestClient(create_app()) as c:
+            r = c.post("/api/batch/hadamard_wxyz", json={"ticks": 1})
+            d = r.json()
+            t0 = d.get("t", 0)
+            r = c.post("/api/feed/hadamard_wxyz", json={
+                "ticks": [t0],
+                "params": {"src": {"value": 2.0}},
+            })
+            assert r.status_code == 200, r.json()
+            d = r.json()
+            assert d.get("ok") is True, d
+            assert d.get("applied") == 1, d
+
+    checks.append(("REST POST /api/feed: param injection applied",
+                   rest_feed_mutates))
+
+    def html_play_button_present():
+        with open("atomic/ui/static/index.html") as f:
+            html = f.read()
+        assert 'id="play-btn"' in html, "play button missing"
+        assert 'id="step-btn"' in html, "step button missing"
+        assert 'id="live-feed-bar"' in html, "live feed bar missing"
+        assert "type: 'pause'" in html, "pause WS msg handler missing"
+
+    checks.append(("HTML: play/step buttons + live feed bar present",
+                   html_play_button_present))
+
+    def html_no_duplicate_startloop():
+        with open("atomic/ui/static/index.html") as f:
+            lines = f.read().split('\n')
+        calls = []
+        for i, line in enumerate(lines):
+            if 'startLoop();' in line:
+                s = line.strip()
+                if s.startswith('function ') or '{' in s:
+                    continue
+                calls.append((i+1, s))
+        assert len(calls) == 0, \
+            f"startLoop() should not be called at top level (found {len(calls)}): {calls}"
+
+    checks.append(("HTML: no duplicate startLoop() (prevents dual polling loops)",
+                   html_no_duplicate_startloop))
+
+    def html_canvas_throttle():
+        with open("atomic/ui/static/index.html") as f:
+            html = f.read()
+        assert "_scheduleRedraw" in html, "throttled redraw function missing"
+        assert 'setTimeout' in html and '16' in html, "16ms throttle missing"
+
+    checks.append(("HTML: canvas throttled at 16ms (~60fps cap)",
+                   html_canvas_throttle))
+
+    def viz_series_batch():
+        fresh_registry()
+        from fastapi.testclient import TestClient
+        from atomic.ui.server import create_app
+        with TestClient(create_app()) as c:
+            r = c.post("/api/batch/sine_lfo_scope", json={"ticks": 30})
+            assert r.status_code == 200, r.json()
+            d = r.json()
+            assert "series" in d, "batch response missing series"
+            has_cv = any(k.endswith(".cv") for k in d["series"])
+            assert has_cv, f"sine_lfo_scope should produce .cv series, got {list(d['series'].keys())}"
+
+    checks.append(("Viz series: sine_lfo_scope batch produces .cv series",
+                   viz_series_batch))
+
+    return checks
+
+
 def main():
-    print("ATOMIC-PC selftest — 36 sections")
+    print("ATOMIC-PC selftest — 38 sections")
     print("="*60)
     results=[]
     results.append(_run_section(1, "bridge", s1_checks))
@@ -5482,6 +5865,8 @@ def main():
     results.append(_run_section(34, "iter35 VideoSynth + VideoSynthSource + IVL pipeline", s34_checks))
     results.append(_run_section(35, "iter40 TE-38 video pipeline (VLLM + FastH3 + QBF)", s35_checks))
     results.append(_run_section(36, "iter41 SlopLoop (H4 consensus + H3Stub + fitness + QBF + evolve)", s36_checks))
+    results.append(_run_section(37, "iter44 ComfyUI vsa no-stub FastH3 happy path", s37_checks))
+    results.append(_run_section(38, "iter45 UI responsiveness (play/pause/step/reset + throttle + feed wiring)", s38_checks))
     print("="*60)
     ok=sum(1 for r in results if r)
     print(f"selftest: {ok}/{len(results)} sections ok")

@@ -201,6 +201,26 @@ def _fasth3_video_live() -> Program:
     )
 
 
+def _infinite_slop_loop() -> Program:
+    """iter 46: SlopLoop program — feeds viz_video via server-push.
+
+    The SlopLoop wires directly to this program's viz_video block
+    (module_id="vv") via Viewer.feed_video_tick(). Switch to this program,
+    then start the slop loop from the Slop control bar.
+
+    Pipeline: Swarm H4 consensus -> H3Stub -> Viewer.feed_video_tick(vv)
+             -> viz_video renders RGBA -> tile wall
+    """
+    return Program(
+        "infinite_slop_loop",
+        description="SlopLoop (H4 consensus + H3Stub + evolve) -> viz_video -> tile wall",
+        blocks=[
+            Block("vv", "viz_video"),
+        ],
+        wires=[],
+    )
+
+
 _REGISTRY: dict[str, Callable[[], Program]] = {
     "clock_counter": _clock_counter,
     "gated_clock_counter": _gated_clock_counter,
@@ -214,6 +234,7 @@ _REGISTRY: dict[str, Callable[[], Program]] = {
     "video_live": _video_live,
     "feed_video_live": _feed_video_live,
     "fasth3_video_live": _fasth3_video_live,
+    "infinite_slop_loop": _infinite_slop_loop,
 }
 
 
@@ -290,6 +311,40 @@ _BICAMERAL_REGISTRY: dict[str, callable] = {
     "bicameral_clock": _bicameral_clock,
     "infinite_video_bicameral": _infinite_video_bicameral,
 }
+
+
+def _infinite_slop_bicameral() -> dict:
+    """iter 46: bicameral SlopLoop — Swarm H4 consensus on GPU1 -> viz_video on GPU0.
+
+    The SlopLoop drives both the BicameralViewer (via feed_video_tick on the
+    conscious engine's bus[vv.frame]) and the swarm H4 consensus on the
+    subconscious side. Operator hits Start on the Slop bar to begin.
+
+    Architecture (mirrors the SlopLoop pipeline):
+      sub=clock_bpm@60 (H3 cadence) + swarm H4
+      con=viz_video (renders the pushed RGBA frame)
+    """
+    return {
+        "type": "bicameral",
+        "sub": Program(
+            "slop_sub",
+            description="clock_bpm@60 — slop loop cadence + swarm H4 consensus",
+            blocks=[Block("clk", "clock_bpm", {"bpm": 60})],
+            wires=[],
+        ),
+        "con": Program(
+            "slop_con",
+            description="viz_video — renders slop-loop pushed frames",
+            blocks=[Block("vv", "viz_video")],
+            wires=[],
+        ),
+        "bridge_map": [("clk.trig", "vv.in")],
+        "bridge_latency": 1,
+        "use_h4": False,
+    }
+
+
+_BICAMERAL_REGISTRY["infinite_slop_bicameral"] = _infinite_slop_bicameral
 
 
 def _infinite_video_export() -> dict:

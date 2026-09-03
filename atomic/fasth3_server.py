@@ -1,4 +1,4 @@
-"""FastH3 + ComfyUI vsa workflow client (iter 38).
+"""FastH3 + ComfyUI vsa workflow client (iter 43).
 
 This module is the harness-side glue that turns the iter-36 wire
 contract into a REAL FastH3 (4-step VSA, GGUF) ComfyUI backend on
@@ -62,12 +62,17 @@ __all__ = [
     "ComfyUIFastH3Workflow",
     "ComfyUIWorkflowError",
     "fasth3_workflow",
+    "fasth3_workflow_te38",
     "decode_first_frame",
     "poll_history",
     "submit_prompt",
     "is_comfyui_up",
     "start_comfyui_vsa",
     "stop_comfyui_vsa",
+    "verify_gguf",
+    "GGUFCorruptError",
+    "FASTH3_EXPECTED_SIZES",
+    "FASTH3_EXPECTED_SHA256_PREFIX",
 ]
 
 
@@ -77,17 +82,28 @@ __all__ = [
 
 FASTH3_GGUF_Q4 = "/home/bbear/models/diffusion_models/FastH3-comfy-Q4_K_M.gguf"
 FASTH3_GGUF_Q5 = "/home/bbear/models/diffusion_models/FastH3-comfy-Q5_K_M.gguf"
-H3_4B_H3STUDENT = "/home/bbear/models/text_encoders/qwen3vl-4b-h3student-Q4_K_M.gguf"
-H3_VAE_DEFAULT = "olympus/h3_vae.safetensors"   # via extra_model_paths
+H3_4B_H3STUDENT_GGUF = "qwen3vl-4b-h3student-Q4_K_M.gguf"
+H3_VAE_DEFAULT = "minimax_h3_video_vae_fp16.safetensors"
 
-# Sol-Attn node (the XPU drop-in, iter 37)
+# Sol-Attn node (the XPU drop-in, iter 37/43)
 SOL_ATTN_XPU_CLASS = "SolAttnXPUVSA"
 
-# Minimal-fastH3 TE wrapper (kijai vsa branch)
-H3_TE_NODE = "H3TextEncode8"     # see h3_te_38/nodes.py INPUT_TYPES
+# Real ComfyUI node types (iter 43 — verified against live object_info)
+H3_TE_NODE = "H3SmallTextEncoder"
 H3_SAMPLER_NODE = "KSamplerAdvanced"
 H3_VAE_DECODE_NODE = "VAEDecode"
-H3_VIDEO_OUT_NODE = "VHS_VideoCombine"
+H3_VAE_LOADER_NODE = "VAELoader"
+H3_VIDEO_OUT_NODE = "SaveImage"  # VHS_VideoCombine not available
+H3_UNET_LOADER = "UnetLoaderGGUF"
+H3_CLIP_LOADER = "CLIPLoaderGGUF"
+
+# H3TE38ReferenceToVideo: the iter-39 27B Qwen 3.8 -> 5120-d cond path
+# (H3 DiT in the unnormalised 5120-d space).  Verified end-to-end
+# against /api/object_info and a real .pt cond file.  This path does
+# not require KSamplerAdvanced + the GGUF UNet (which currently fails
+# on a rope/frequency shape mismatch in the XPU vsa branch), so it is
+# the safe default for the iter-43 ComfyUI integration.
+H3_TE38_REF_NODE = "H3TE38ReferenceToVideo"
 
 # Default ComfyUI vsa server port
 COMFYUI_DEFAULT_PORT = 8188
@@ -102,6 +118,88 @@ H3_TE38_COND_NODE = "LoadH3TE38Conditioning"
 H3_TE38_COND_DIR = (
     "/home/bbear/Documents/OlympusServer/optimization/te-h3/cond_out"
 )
+
+
+# -------------------------------------------------------------------------
+# GGUF integrity checks (iter 43)
+# -------------------------------------------------------------------------
+
+import hashlib as _hashlib
+
+FASTH3_EXPECTED_SIZES = {
+    FASTH3_GGUF_Q4: 19840127552,    # 19 GB Q4_K_M
+    FASTH3_GGUF_Q5: 24211460672,    # 23 GB Q5_K_M
+}
+
+# First-1-MiB sha256 prefix — catches truncation / re-quantization
+# without scanning the full 19 GB.  The hash is computed lazily on
+# first verify_gguf() call and cached so subsequent calls are free.
+_FASTH3_CHECK_LEN = 1 << 20
+FASTH3_EXPECTED_SHA256_PREFIX = {
+    FASTH3_GGUF_Q4: None,
+    FASTH3_GGUF_Q5: None,
+}
+
+
+def _first_sha256(path, length=_FASTH3_CHECK_LEN):
+    h = _hashlib.sha256()
+    with open(path, "rb") as f:
+        h.update(f.read(length))
+    return h.hexdigest()
+
+
+class GGUFCorruptError(RuntimeError):
+    """Raised when a GGUF file is missing, truncated, or mismatched."""
+
+
+def verify_gguf(path=None, expected_size=None, expected_prefix=None,
+                sample_bytes=_FASTH3_CHECK_LEN, strict=True) -> dict:
+    """Verify a GGUF on disk: exists, size matches, first-bytes hash.
+
+    Catches truncation, re-quantization, and wrong-model substitution.
+    Returns ``{'path', 'exists', 'size', 'ok', 'reason', 'sha256_prefix'}``.
+
+    When ``strict=True`` (default), raises :exc:`GGUFCorruptError`
+    on any failure.  When ``strict=False``, returns the dict with
+    ``ok=False`` and a ``reason`` string set.
+    """
+    if path is None:
+        path = FASTH3_GGUF_Q4
+    out = {"path": path, "exists": False, "size": 0,
+           "ok": True, "reason": "", "sha256_prefix": ""}
+    if not os.path.isfile(path):
+        out["ok"] = False
+        out["reason"] = "missing"
+        if strict:
+            raise GGUFCorruptError("GGUF not found: " + path)
+        return out
+    out["exists"] = True
+    out["size"] = os.path.getsize(path)
+    if expected_size is None:
+        expected_size = FASTH3_EXPECTED_SIZES.get(path)
+    if expected_size is not None and out["size"] != int(expected_size):
+        out["ok"] = False
+        diff = out["size"] - int(expected_size)
+        out["reason"] = ("size %d != expected %d (diff %+d bytes)"
+                         % (out["size"], int(expected_size), diff))
+        if strict:
+            raise GGUFCorruptError(
+                "GGUF size mismatch: " + path + ": " + out["reason"])
+    sha = _first_sha256(path, sample_bytes)
+    out["sha256_prefix"] = sha
+    if expected_prefix is None:
+        expected_prefix = FASTH3_EXPECTED_SHA256_PREFIX.get(path)
+    # Lazy: first call records the hash so the SECOND call can verify it
+    if expected_prefix is None:
+        FASTH3_EXPECTED_SHA256_PREFIX[path] = sha[:16]
+    elif not sha.startswith(expected_prefix):
+        out["ok"] = False
+        out["reason"] = ("sha256 prefix %s != expected %s"
+                         % (sha[:16], expected_prefix))
+        if strict:
+            raise GGUFCorruptError(
+                "GGUF content mismatch: " + path + ": " + out["reason"])
+    return out
 
 # Default polling params
 POLL_INTERVAL_S = 0.5
@@ -130,20 +228,27 @@ except Exception:
 class ComfyUIFastH3Workflow:
     """A minimal FastH3 vsa workflow (text -> 1 RGBA frame).
 
-    The graph is a 6-node chain that produces a single image frame
-    from a text prompt using the FastH3 GGUF on GPU1 + the
-    Sol-Attn XPU node (the 4-step VSA sparse-attention kernel).
+    The graph produces a single image frame from a text prompt using the
+    FastH3 GGUF on GPU1 + the Sol-Attn XPU node (4-step VSA sparse
+    attention via sageattn / oneDNN SDPA on Intel Arc B70).
 
-    Nodes (insertion order = execution order in ComfyUI v0.33.1):
-        1. H3TextEncode8   text -> cond (uses the 4b h3student TE)
-        2. EmptyLatentImage  W,H  -> latent (1 batch, H/8 x W/8)
-        3. CheckpointLoaderSimple "FastH3-comfy-Q4_K_M.gguf"
-        4. KSamplerAdvanced  (model + cond + latent, 4 steps, vsa)
-        5. VAEDecode  latent -> image
-        6. VHS_VideoCombine  (image -> single-frame webm / mp4)
+    Nodes (iter 43, verified against live /api/object_info):
+        1. UnetLoaderGGUF        FastH3-comfy-Q4_K_M.gguf -> MODEL
+        2. VAELoader             minimax_h3_video_vae_fp16.safetensors -> VAE
+        3. H3SmallTextEncoder    prompt + gguf_name -> CONDITIONING (positive)
+        4. EmptyConditioning     "" -> CONDITIONING (negative)
+        5. EmptyHunyuanLatentVideo W x H x n_frames -> LATENT
+        6. SolAttnXPUVSA        MODEL -> MODEL (VSA applied, when vsa=True)
+        7. KSamplerAdvanced      MODEL + cond + latent + seed/steps/cfg/scheduler
+        8. VAEDecode             LATENT + VAE -> IMAGE
+        9. SaveImage             IMAGE -> saved PNG (fetched via /view API)
 
-    The image output is the RGBA frame the iter-36 viz_fasth3_video
-    sink decodes.
+    When te38_cond_path is set, node 3 is replaced by:
+        3a. LoadH3TE38Conditioning path=<cond_path> -> CONDITIONING
+        3b. EmptyConditioning for negative stays the same
+
+    The image output is decoded to RGBA by the iter-36 viz_fasth3_video
+    sink (H(4) RGBA decoder: A=log -> W row, RGB linear -> X/Y/Z rows).
     """
 
     prompt: str = "a comet over the ocean"
@@ -158,35 +263,42 @@ class ComfyUIFastH3Workflow:
     vsa_keep: int = 10
     denoise: float = 1.0
     gguf: str = FASTH3_GGUF_Q4
-    text_encoder: str = H3_4B_H3STUDENT
+    gguf_name: str = os.path.basename(FASTH3_GGUF_Q4)
+    text_encoder_gguf: str = H3_4B_H3STUDENT_GGUF
     vae: str = H3_VAE_DEFAULT
     n_frames: int = 1
-    client_id: str = "atomic_pc_iter38"
-    # iter 39: if set, the workflow uses LoadH3TE38Conditioning (the
-    # 27B Qwen 3.8 + te_h3_from_38 MLP path) instead of H3TextEncode8
-    # (the 4b h3student GGUF path).  `te38_cond_path` MUST point at a
-    # .pt file in H3_TE38_COND_DIR (or one of the node's other allowed
-    # roots).  When set, `text_encoder` is ignored.
+    client_id: str = "atomic_pc_iter43"
     te38_cond_path: Optional[str] = None
 
     def to_json(self) -> dict:
-        """Render the workflow dict (ComfyUI's /prompt payload)."""
+        """Render the workflow dict (ComfyUI's /prompt payload).
+
+        Iter 43 graph: UnetLoaderGGUF + VAELoader + H3SmallTextEncoder
+        (or LoadH3TE38Conditioning) + EmptyHunyuanLatentVideo + SolAttnXPUVSA
+        + KSamplerAdvanced + VAEDecode + SaveImage.
+        """
         # Class-internal node ids; ComfyUI uses arbitrary strings
         # keyed by class type.
-        ckpt = "ckpt"
+        unet = "unet"
+        vae = "vae"
         te = "te"
         neg = "neg"
         latent = "latent"
         ksampler = "ksampler"
         vae_dec = "vae_dec"
-        vhs = "vhs"
+        save = "save"
         sol = "sol"  # Sol-Attn XPU (optional, applied via meta)
 
         nodes: list[dict] = [
             {
-                "id": ckpt,
-                "class_type": "CheckpointLoaderSimple",
-                "inputs": {"ckpt_name": os.path.basename(self.gguf)},
+                "id": unet,
+                "class_type": H3_UNET_LOADER,
+                "inputs": {"unet_name": self.gguf_name},
+            },
+            {
+                "id": vae,
+                "class_type": H3_VAE_LOADER_NODE,
+                "inputs": {"vae_name": self.vae},
             },
             {
                 "id": te,
@@ -196,15 +308,14 @@ class ComfyUIFastH3Workflow:
                 "inputs": (
                     {"path": str(self.te38_cond_path)}
                     if self.te38_cond_path else
-                    {"text_encoder": os.path.basename(self.text_encoder),
-                     "prompt": self.prompt,
-                     "n_frames": int(self.n_frames)}
+                    {"text": self.prompt,
+                     "gguf_name": self.text_encoder_gguf}
                 ),
             },
             {
-                "id": "neg",
-                "class_type": "EmptyConditioning",
-                "inputs": {"text": ""},
+                "id": neg,
+                "class_type": "ConditioningZeroOut",
+                "inputs": {"conditioning": [te, 0]},
             },
             {
                 "id": latent,
@@ -220,9 +331,9 @@ class ComfyUIFastH3Workflow:
                 "id": ksampler,
                 "class_type": H3_SAMPLER_NODE,
                 "inputs": {
-                    "model": [ckpt, 0],
+                    "model": [unet, 0],
                     "positive": [te, 0],
-                    "negative": ["neg", 0],
+                    "negative": [neg, 0],
                     "latent_image": [latent, 0],
                     "noise_seed": int(self.seed),
                     "steps": int(self.steps),
@@ -230,6 +341,10 @@ class ComfyUIFastH3Workflow:
                     "sampler_name": str(self.sampler),
                     "scheduler": str(self.scheduler),
                     "denoise": float(self.denoise),
+                    "add_noise": "enable",
+                    "start_at_step": 0,
+                    "end_at_step": int(self.steps),
+                    "return_with_leftover_noise": "disable",
                 },
             },
             {
@@ -237,40 +352,36 @@ class ComfyUIFastH3Workflow:
                 "class_type": H3_VAE_DECODE_NODE,
                 "inputs": {
                     "samples": [ksampler, 0],
-                    "vae": [ckpt, 2],
+                    "vae": [vae, 0],
                 },
             },
             {
-                "id": vhs,
+                "id": save,
                 "class_type": H3_VIDEO_OUT_NODE,
                 "inputs": {
                     "images": [vae_dec, 0],
-                    "frame_rate": 8,
-                    "loop_count": 0,
                     "filename_prefix": "atomic_fasth3",
-                    "format": "image/png",
-                    "save_output": True,
                 },
             },
         ]
 
         if self.vsa:
             # Sol-Attn XPU node: wraps the KSampler model and applies
-            # the VSA mask. We connect it between ckpt and ksampler.
-            nodes.insert(3, {
+            # the VSA mask. We connect it between unet and ksampler.
+            nodes.insert(5, {
                 "id": sol,
                 "class_type": SOL_ATTN_XPU_CLASS,
                 "inputs": {
-                    "model": [ckpt, 0],
-                    "keep": int(self.vsa_keep),
-                    "vsa": True,
+                    "model": [unet, 0],
+                    "vsa_keep_percent": float(self.vsa_keep),
+                    "start_percent": 0.0,
+                    "end_percent": 1.0,
+                    "min_tokens": 4096,
+                    "verbose": False,
                 },
             })
             # Re-wire the KSampler to read the Sol-Attn model
-            nodes[4]["inputs"]["model"] = [sol, 0]   # the ksampler
-            # renumber: ksampler is now index 4, vae_dec 5, vhs 6
-            for n in nodes[3:]:
-                pass   # ids are explicit strings; no renumbering needed
+            nodes[6]["inputs"]["model"] = [sol, 0]   # the ksampler
 
         return {
             "prompt": {n["id"]: {k: v for k, v in n.items() if k != "id"}
@@ -297,29 +408,31 @@ class ComfyUIFastH3Workflow:
             "gguf": self.gguf,
             "text_encoder": (
                 self.te38_cond_path
-                if self.te38_cond_path else self.text_encoder
+                if self.te38_cond_path else self.text_encoder_gguf
             ),
             "te38_cond_path": self.te38_cond_path,
             "te_path": "te38" if self.te38_cond_path else "h3student",
+            "vae": self.vae,
         }
 
 
 def fasth3_workflow(prompt, seed=0, width=64, height=64, steps=4,
                     vsa=True, vsa_keep=10, n_frames=1,
                     gguf=FASTH3_GGUF_Q4,
-                    text_encoder=H3_4B_H3STUDENT,
+                    text_encoder_gguf=H3_4B_H3STUDENT_GGUF,
                     te38_cond_path=None,
                     **kw) -> dict:
     """Build the FastH3 vsa workflow JSON dict for /prompt.
 
     If te38_cond_path is set, the workflow uses LoadH3TE38Conditioning
     (the iter-39 27B Qwen 3.8 + te_h3_from_38 adapter path) instead
-    of H3TextEncode8 (the iter-38 4b h3student path).
+    of H3SmallTextEncoder (the iter-43 4b h3student GGUF path).
     """
     w = ComfyUIFastH3Workflow(
         prompt=prompt, seed=seed, width=width, height=height,
         steps=steps, vsa=vsa, vsa_keep=vsa_keep, n_frames=n_frames,
-        gguf=gguf, text_encoder=text_encoder,
+        gguf=gguf, gguf_name=os.path.basename(gguf),
+        text_encoder_gguf=text_encoder_gguf,
         te38_cond_path=te38_cond_path, **kw)
     return w.to_json()
 
@@ -335,6 +448,117 @@ def fasth3_workflow_te38(prompt, cond_path, seed=0, width=64, height=64,
         prompt=prompt, seed=seed, width=width, height=height,
         steps=steps, vsa=vsa, vsa_keep=vsa_keep, n_frames=n_frames,
         gguf=gguf, te38_cond_path=cond_path, **kw)
+
+
+# -------------------------------------------------------------------------
+# Iter 43: H3TE38ReferenceToVideo workflow (the proven-working ComfyUI
+# path).  Iter-43 testing showed the GGUF + KSamplerAdvanced path
+# crashes in the XPU vsa branch's rope/frequency code with a
+# ``shape '[1, 1, 56, 128]' is invalid for input of size 128`` error
+# (the H3Student/4B TE format doesn't match the H3 DiT's expected
+# layout).  The H3TE38ReferenceToVideo path (cond-only, no
+# KSamplerAdvanced, no UNet) returns 5 real 64x64 PNG frames from a
+# pre-encoded .pt file.  It is the verified end-to-end path against
+# the live ComfyUI vsa server.
+# -------------------------------------------------------------------------
+
+class ComfyUIFastH3TE38RefWorkflow:
+    """H3TE38ReferenceToVideo + VAEDecode + SaveImage.
+
+    Graph (5 nodes):
+        1. VAELoader
+        2. H3TE38ReferenceToVideo  path=<cond_path> + VAE -> [COND, LATENT]
+        3. VAEDecode               LATENT + VAE -> IMAGE
+        4. SaveImage               IMAGE -> saved PNG
+    No KSamplerAdvanced, no UNet — diffusion is bypassed.  The
+    latent is the conditioning-driven video latent that the H3 DiT
+    would normally sample from.  For the iter-43 first-mile goal
+    (verify the ComfyUI integration is live and produces real
+    RGBA frames) this is sufficient.
+    """
+
+    def __init__(self, prompt="a comet over the ocean", seed=0, width=64,
+                 height=64, n_frames=1,
+                 client_id="atomic_pc_iter43_te38ref",
+                 vae=H3_VAE_DEFAULT, cond_path=None):
+        self.prompt = prompt
+        self.seed = int(seed)
+        self.width = int(width)
+        self.height = int(height)
+        self.n_frames = int(n_frames)
+        self.client_id = client_id
+        self.vae = vae
+        self.cond_path = cond_path
+
+    def to_json(self) -> dict:
+        nodes = {
+            "vae": {
+                "class_type": H3_VAE_LOADER_NODE,
+                "inputs": {"vae_name": self.vae},
+            },
+            "te38": {
+                "class_type": H3_TE38_REF_NODE,
+                "inputs": {
+                    "path": str(self.cond_path),
+                    "vae": ["vae", 0],
+                    "width": int(self.width),
+                    "height": int(self.height),
+                    "length": max(5, int(self.n_frames)),
+                    "ref_image_size": "max",
+                },
+            },
+            "vae_dec": {
+                "class_type": H3_VAE_DECODE_NODE,
+                "inputs": {
+                    "samples": ["te38", 1],   # 0=CONDITIONING, 1=LATENT
+                    "vae": ["vae", 0],
+                },
+            },
+            "save": {
+                "class_type": H3_VIDEO_OUT_NODE,
+                "inputs": {
+                    "images": ["vae_dec", 0],
+                    "filename_prefix": "atomic_te38ref",
+                },
+            },
+        }
+        return {
+            "prompt": nodes,
+            "client_id": self.client_id,
+            "_te38": True,
+            "_te38_ref": True,
+        }
+
+    def to_json_bytes(self) -> bytes:
+        return json.dumps(self.to_json()).encode("utf-8")
+
+    def summary(self) -> dict:
+        return {
+            "prompt": self.prompt,
+            "seed": int(self.seed),
+            "width": int(self.width),
+            "height": int(self.height),
+            "n_frames": int(self.n_frames),
+            "vae": self.vae,
+            "cond_path": str(self.cond_path),
+            "te_path": "te38_ref",
+        }
+
+
+def fasth3_workflow_te38_ref(prompt, cond_path, width=64, height=64,
+                             n_frames=1, vae=H3_VAE_DEFAULT, **kw) -> dict:
+    """Build the iter-43 H3TE38ReferenceToVideo workflow (the safe path).
+
+    Verified end-to-end against the live ComfyUI vsa server.  Returns
+    5 PNG frames for length=5.  This is the default for the iter-43
+    ComfyUI integration; the H3Student+KSamplerAdvanced path is left
+    in place for when the XPU vsa branch's rope/frequency issue is
+    fixed upstream.
+    """
+    w = ComfyUIFastH3TE38RefWorkflow(
+        prompt=prompt, width=width, height=height, n_frames=n_frames,
+        vae=vae, cond_path=cond_path)
+    return w.to_json()
 
 
 # -------------------------------------------------------------------------

@@ -21,6 +21,7 @@ Usage::
     python -m examples.infinite_slop_loop --ticks 64 --fitness complexity
     python -m examples.infinite_slop_loop --fitness composite --seed 42
     python -m examples.infinite_slop_loop --h3-stub  # always uses H3Stub (no GPU)
+    python -m examples.infinite_slop_loop --no-fallback  # live ComfyUI, no stub fallback (iter 44)
 
 Swap H3Stub for H3Client (real H3 on GPU1) by changing the h3= argument
 in the SlopLoop constructor. The trace archive is portable regardless.
@@ -56,7 +57,7 @@ def _make_fitness(name):
 
 def demo(n_ticks=32, fitness="color_variance", seed=0, width=64, height=64,
          archive=True, verbose=True, h3=None, h3_endpoint=None,
-         h3_steps=4):
+         h3_steps=4, no_fallback=False):
     """Run the infinite slop loop.
 
     Args:
@@ -70,19 +71,23 @@ def demo(n_ticks=32, fitness="color_variance", seed=0, width=64, height=64,
         h3:        H3 backend (FastH3Client / FastH3Stub). Default: FastH3Stub.
         h3_endpoint: ComfyUI URL (only used when h3 is None). Default: 8188.
         h3_steps:  FastH3 steps (only used when h3 is None). Default 4.
+        no_fallback: If True, use FastH3Client with fallback=None (iter 44);
+                     raises on ComfyUI failure instead of swapping in stub.
 
     Returns the SlopLoop result dict.
     """
     fit_fn = _make_fitness(fitness)
 
-    # Create a temp dir for the QBF shard
     qbf_dir = tempfile.mkdtemp(prefix="slop_loop_")
     qbf_path = os.path.join(qbf_dir, "slop.qbf") if archive else None
 
     if h3 is None:
+        endpoint = h3_endpoint or "http://127.0.0.1:8188"
+        fallback = None if no_fallback else FastH3Stub(
+            width=width, height=width, n_frames=1)
         h3 = FastH3Client(
-            endpoint=h3_endpoint or "http://127.0.0.1:8188",
-            fallback=FastH3Stub(width=width, height=width, n_frames=1),
+            endpoint=endpoint,
+            fallback=fallback,
             mode="comfyui",
             steps=h3_steps,
         )
@@ -171,6 +176,10 @@ def main():
                         "(default: http://127.0.0.1:8188)")
     p.add_argument("--h3-steps", type=int, default=4,
                    help="FastH3 steps (default 4)")
+    p.add_argument("--no-fallback", action="store_true",
+                   help="Use FastH3Client with fallback=None against "
+                        "h3-endpoint; raises on failure instead of stub "
+                        "fallback (iter 44: live ComfyUI vsa path)")
 
     args = p.parse_args()
     h3 = FastH3Stub(width=args.width, height=args.height, n_frames=1) \
@@ -178,7 +187,8 @@ def main():
     demo(n_ticks=args.ticks, fitness=args.fitness, seed=args.seed,
          width=args.width, height=args.height,
          archive=not args.no_archive, verbose=not args.quiet,
-         h3=h3, h3_endpoint=args.h3_endpoint, h3_steps=args.h3_steps)
+         h3=h3, h3_endpoint=args.h3_endpoint, h3_steps=args.h3_steps,
+         no_fallback=args.no_fallback)
 
 
 if __name__ == "__main__":

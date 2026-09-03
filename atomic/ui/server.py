@@ -107,6 +107,23 @@ def create_app() -> FastAPI:
             raise HTTPException(404, f"program {name!r} not found")
         return _control_schema(v)
 
+    @app.post("/api/control/{name}")
+    async def set_control(name: str, payload: dict):
+        """iter 45: set playing/paused state and reset.
+
+        Payload: {playing?: bool, reset?: bool}
+        """
+        v = Viewer.get(name)
+        if v is None:
+            v = _auto_register(name)
+        if v is None:
+            raise HTTPException(404, f"program {name!r} not found")
+        if "playing" in payload:
+            v.set_playing(bool(payload["playing"]))
+        if payload.get("reset"):
+            return v.reset_engine()
+        return {"ok": True, "playing": v.playing, "tick": v.tick}
+
     @app.get("/api/snapshot/{name}")
     async def snapshot(name: str):
         v = Viewer.get(name)
@@ -129,6 +146,8 @@ def create_app() -> FastAPI:
     async def feed(name: str, payload: dict):
         v = Viewer.get(name)
         if v is None:
+            v = _auto_register(name)
+        if v is None:
             raise HTTPException(404, f"program {name!r} not found")
         for t in payload.get("ticks") or []:
             v.apply_feed(int(t), payload)
@@ -138,6 +157,8 @@ def create_app() -> FastAPI:
     async def tap(name: str):
         v = Viewer.get(name)
         if v is None:
+            v = _auto_register(name)
+        if v is None:
             raise HTTPException(404, f"program {name!r} not found")
         v.tap()
         return {"ok": True, "tick": v.tick}
@@ -145,6 +166,8 @@ def create_app() -> FastAPI:
     @app.post("/api/batch/{name}")
     async def batch(name: str, payload: dict):
         v = Viewer.get(name)
+        if v is None:
+            v = _auto_register(name)
         if v is None:
             raise HTTPException(404, f"program {name!r} not found")
         ticks = int(payload.get("ticks", 60))
@@ -185,7 +208,18 @@ def create_app() -> FastAPI:
                 first = True
                 while not stop.is_set():
                     t0 = time.perf_counter()
-                    v.tick_once()
+                    if v.playing:
+                        v.tick_once()
+                    else:
+                        # iter 45: paused — still send a heartbeat snapshot every dt
+                        # so the client knows the connection is alive + the playing flag
+                        await ws.send_text(json.dumps({
+                            "t": v.tick, "running": False, "paused": True,
+                            "bus": v.snapshot().get("bus", {}),
+                            "diff": True,
+                        }))
+                        await asyncio.sleep(v.dt)
+                        continue
                     eng_us = (time.perf_counter() - t0) * 1e6
                     prev_bus = getattr(v, "_last_bus", None)
                     t1 = time.perf_counter()
@@ -193,6 +227,7 @@ def create_app() -> FastAPI:
                     if first:
                         diff["_lat_eng"] = eng_us
                         first = False
+                    diff["playing"] = v.playing
                     try:
                         await ws.send_text(json.dumps(diff))
                     except Exception:
@@ -1023,6 +1058,279 @@ def create_app() -> FastAPI:
             if name in _IVL_SESSIONS:
                 _IVL_SESSIONS[name]["running"] = False
 
+    # ── iter 46: server-side preset CRUD ──────────────────────────────────
+    @app.get("/api/presets")
+    async def presets_list(program: str | None = None):
+        from .presets import list_presets as _lp
+        return {"presets": _lp(program)}
+
+    @app.get("/api/presets/{name}")
+    async def preset_get(name: str):
+        from .presets import get_preset as _gp
+        p = _gp(name)
+        if p is None:
+            raise HTTPException(404, f"preset {name!r} not found")
+        return p
+
+    @app.post("/api/presets/{name}")
+    async def preset_save(name: str, payload: dict):
+        from .presets import save_preset as _sp
+        try:
+            p = _sp(name, payload)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "preset": p}
+
+    @app.delete("/api/presets/{name}")
+    async def preset_delete(name: str):
+        from .presets import delete_preset as _dp
+        if not _dp(name):
+            raise HTTPException(404, f"preset {name!r} not found")
+        return {"ok": True, "deleted": name}
+
+    # ── iter 46: SlopLoop session (server-push H3 + H4 consensus + evolve) ──
+    _SLOP_SESSIONS: dict[str, object] = {}  # name -> slop session dict
+
+    @app.post("/api/slop/{name}/start")
+    async def slop_start(name: str, payload: dict | None = None):
+        """Start a SlopLoop session on top of a Viewer (single engine).
+
+        Pipeline: SlopLoop.tick() -> H3Stub/H3Client -> Viewer.feed_video_tick(vv)
+                 -> viz_video renders -> tile wall
+        """
+        from ..slop_loop import SlopLoop
+        from ..video import H3Stub, H3Client
+        from ..video_server import _get_global_server
+        v = Viewer.get(name)
+        if v is None:
+            v = _auto_register(name)
+        if v is None:
+            raise HTTPException(404, f"program {name!r} not found")
+        p = payload or {}
+        width = int(p.get("width", 64))
+        height = int(p.get("height", 64))
+        prompts = list(p.get("prompts") or [])
+        fitness = str(p.get("fitness", "color_variance"))
+        seed = int(p.get("seed", 0))
+        max_ticks = int(p.get("max_ticks", 1000))
+        h3_url = str(p.get("h3_url", ""))
+
+        # Build H3 source
+        if h3_url:
+            try:
+                port = int(h3_url.split(":")[-1])
+                srv = _get_global_server(port)
+                if srv is not None and srv.is_running:
+                    h3 = H3Client(endpoint=h3_url, fallback=H3Stub(width=width, height=height))
+                    h3_kind = "H3Client"
+                else:
+                    h3 = H3Stub(width=width, height=height)
+                    h3_kind = "H3Stub(fallback)"
+            except Exception:
+                h3 = H3Stub(width=width, height=height)
+                h3_kind = "H3Stub(fallback)"
+        else:
+            h3 = H3Stub(width=width, height=height)
+            h3_kind = "H3Stub"
+
+        # Choose fitness
+        from ..slop_loop import (
+            fitness_color_variance, fitness_h4_w_latch,
+            fitness_complexity, composite_fitness,
+        )
+        fitness_fn_map = {
+            "color_variance": fitness_color_variance,
+            "h4_w_latch": fitness_h4_w_latch,
+            "complexity": fitness_complexity,
+            "composite": composite_fitness,
+        }
+        fitness_fn = fitness_fn_map.get(fitness, fitness_color_variance)
+
+        # Build SlopLoop
+        loop = SlopLoop(
+            h3=h3, bank=prompts or None, fitness_fn=fitness_fn,
+            seed=seed, max_ticks=max_ticks, width=width, height=height,
+        )
+        session = {
+            "loop": loop,
+            "viewer_name": name,
+            "viewer": v,
+            "module_id": str(p.get("module_id", "vv")),
+            "h3_kind": h3_kind,
+            "fitness": fitness,
+            "running": True,
+            "t": 0,
+            "frames_generated": 0,
+            "scores": [],
+            "bank": list(loop._bank_list),
+            "evolver_gen": 0,
+        }
+        _SLOP_SESSIONS[name] = session
+        return {
+            "ok": True,
+            "name": name,
+            "h3_kind": h3_kind,
+            "fitness": fitness,
+            "width": width,
+            "height": height,
+            "prompts": session["bank"],
+            "max_ticks": max_ticks,
+            "seed": seed,
+        }
+
+    @app.post("/api/slop/{name}/stop")
+    async def slop_stop(name: str):
+        session = _SLOP_SESSIONS.get(name)
+        if session is None:
+            raise HTTPException(404, f"no slop session for {name!r}")
+        session["running"] = False
+        try:
+            session["loop"].stop()
+        except Exception:
+            pass
+        return {"ok": True, "name": name, "running": False}
+
+    @app.get("/api/slop/{name}/stats")
+    async def slop_stats(name: str):
+        session = _SLOP_SESSIONS.get(name)
+        if session is None:
+            return {
+                "running": False, "name": name, "frames_generated": 0,
+                "t": 0, "scores": [], "evolver_gen": 0, "bank": [],
+            }
+        loop = session["loop"]
+        stats = loop.stats() if loop else {}
+        return {
+            "running": session.get("running", False),
+            "name": name,
+            "h3_kind": session.get("h3_kind", ""),
+            "fitness": session.get("fitness", ""),
+            "t": session.get("t", 0),
+            "frames_generated": session.get("frames_generated", 0),
+            "scores": session.get("scores", []),
+            "evolver_gen": session.get("evolver_gen", 0),
+            "bank": session.get("bank", []),
+            "loop_stats": stats,
+        }
+
+    @app.post("/api/slop/{name}/evolve")
+    async def slop_evolve(name: str):
+        """Run one SlopEvolver.evolve() on the active session."""
+        session = _SLOP_SESSIONS.get(name)
+        if session is None:
+            raise HTTPException(404, f"no slop session for {name!r}")
+        loop = session["loop"]
+        result = loop.evolve_bank()
+        session["bank"] = list(result.bank)
+        session["evolver_gen"] = result.gen
+        return {
+            "ok": True, "name": name,
+            "new_bank": list(result.bank),
+            "gen": result.gen,
+            "score": result.score,
+        }
+
+    @app.websocket("/ws/slop/{name}")
+    async def ws_slop(name: str, ws: WebSocket):
+        """WebSocket live stream for SlopLoop: tick loop steps SlopLoop + pushes frames."""
+        import time
+        await ws.accept()
+        session = _SLOP_SESSIONS.get(name)
+        if session is None:
+            await ws.send_text(json.dumps({"error": "no slop session"}))
+            await ws.close()
+            return
+        loop = session["loop"]
+        v = session["viewer"]
+        module_id = session["module_id"]
+        session["running"] = True
+        try:
+            await ws.send_text(json.dumps({
+                "t": v.tick, "running": True, "name": name,
+                "_slop_stats": {"frames_generated": 0, "evolver_gen": 0},
+            }))
+            stop = asyncio.Event()
+
+            async def tick_loop():
+                nonlocal _SLOP_SESSIONS
+                first = True
+                while not stop.is_set():
+                    sess = _SLOP_SESSIONS.get(name)
+                    if sess is None or not sess.get("running", False):
+                        stop.set()
+                        break
+                    t0 = time.perf_counter()
+                    frame = loop.tick()
+                    if frame is None:
+                        stop.set()
+                        break
+                    # Push frame into the viewer
+                    v.feed_video_tick(frame.rgba, module_id)
+                    sess["t"] = loop.loop_t
+                    sess["frames_generated"] = sess.get("frames_generated", 0) + 1
+                    sess["scores"] = list(loop.scores)
+                    sess["bank"] = list(loop._bank_list)
+                    sess["evolver_gen"] = loop.evolver.gen
+                    # Auto-evolve every 8 ticks
+                    if loop.loop_t > 0 and loop.loop_t % 8 == 0:
+                        loop.evolve_bank()
+                    snap = v.snapshot()
+                    snap["_slop_frame"] = {
+                        "t": frame.t,
+                        "seed": frame.seed,
+                        "prompt": frame.prompt,
+                        "h3_latency_ms": frame.h3_latency_ms,
+                        "size_bytes": frame.size_bytes,
+                        "rgba_sha256": frame.sha256,
+                    }
+                    snap["_slop_stats"] = {
+                        "frames_generated": sess["frames_generated"],
+                        "evolver_gen": sess["evolver_gen"],
+                        "bank": list(sess["bank"]),
+                        "latest_score": loop.scores[-1] if loop.scores else 0.0,
+                    }
+                    eng_us = (time.perf_counter() - t0) * 1e6
+                    if first:
+                        snap["_lat_eng"] = eng_us
+                        first = False
+                    try:
+                        await ws.send_text(json.dumps(snap))
+                    except Exception:
+                        stop.set()
+                        return
+                    await asyncio.sleep(v.dt)
+
+            async def recv_loop():
+                while not stop.is_set():
+                    try:
+                        msg = await ws.receive_json()
+                    except Exception:
+                        stop.set()
+                        return
+                    kind = msg.get("type", "")
+                    if kind == "ping":
+                        try:
+                            await ws.send_text(json.dumps({"_pong": True}))
+                        except Exception:
+                            stop.set()
+                            return
+                    elif kind == "stop":
+                        stop.set()
+                        return
+
+            t1 = asyncio.create_task(tick_loop())
+            t2 = asyncio.create_task(recv_loop())
+            try:
+                await asyncio.wait({t1, t2},
+                                   return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                stop.set()
+                for t in (t1, t2):
+                    t.cancel()
+        finally:
+            if name in _SLOP_SESSIONS:
+                _SLOP_SESSIONS[name]["running"] = False
+
     return app
 
 
@@ -1053,6 +1361,18 @@ async def _handle_ws_msg(v: Viewer, ws: WebSocket, msg: dict):
         ticks = int(msg.get("ticks", 60))
         snap = v.batch(ticks)
         await ws.send_text(json.dumps({"ack": "batch", "snapshot": snap}))
+    elif kind == "play":
+        v.set_playing(True)
+        await ws.send_text(json.dumps({"ack": "play", "playing": True}))
+    elif kind == "pause":
+        v.set_playing(False)
+        await ws.send_text(json.dumps({"ack": "pause", "playing": False}))
+    elif kind == "step":
+        snap = v.step_once()
+        await ws.send_text(json.dumps({"ack": "step", "snapshot": snap}))
+    elif kind == "reset":
+        snap = v.reset_engine()
+        await ws.send_text(json.dumps({"ack": "reset", "snapshot": snap}))
     else:
         await ws.send_text(json.dumps({"error": f"unknown msg type {kind!r}"}))
 

@@ -60,6 +60,7 @@ class Viewer:
         self._engine: Engine | None = None
         self._oracle: LiveOracle | None = None
         self._running = False
+        self._playing = True  # iter 45: server-side play/pause; WS still live but no tick
         self._tick_count = 0
         self._clients: list[asyncio.Queue] = []
         self._client_drops: dict[int, int] = {}
@@ -91,15 +92,56 @@ class Viewer:
         return self._running
 
     @property
+    def playing(self) -> bool:
+        return self._playing
+
+    @property
     def tick(self) -> int:
         return self._tick_count
+
+    def set_playing(self, playing: bool) -> None:
+        """iter 45: toggle the engine's playing state. WS remains connected;
+        tick_once() skips the engine.tick() call while paused but still
+        snapshots + pushes to clients (so the UI stays responsive)."""
+        with self._lock:
+            self._playing = bool(playing)
+
+    def step_once(self) -> dict:
+        """iter 45: advance exactly one tick even while paused (for STEP button)."""
+        eng = self.engine
+        self.apply_pending(self._tick_count)
+        eng.tick()
+        self._tick_count = eng._t
+        return self.snapshot()
+
+    def reset_engine(self) -> dict:
+        """iter 45: reset engine state (t=0, cleared bus/series/feeds)."""
+        with self._lock:
+            self._engine = None
+            self._tick_count = 0
+            self._feeds.clear()
+            self._pending_feeds.clear()
+            self._pending_taps.clear()
+        return self.snapshot()
 
     @property
     def view_layout(self) -> list[dict]:
         if not self._view_layout:
-            self._view_layout = _layout_views(self.views, cols=4)
+            # Strategy: if the compiled patch has rich views with span info,
+            # use them; otherwise fall back to auto-layout.
+            views = self.views
+            has_spans = any(
+                (v.get("tile_rows", 1) > 1 or v.get("tile_cols", 1) > 1)
+                for v in views
+            )
+            if views and not has_spans:
+                # Views exist but are sparse (1x1 each). Use auto-layout to
+                # assign sensible spans (video/wxyz3d/xy → 4x4; series → compact).
+                auto = _auto_views(self.modules, cols=4, rows=4)
+                if auto:
+                    self._view_layout = auto
             if not self._view_layout:
-                self._view_layout = _auto_views(self.modules, cols=4)
+                self._view_layout = _layout_views(views, cols=4)
         return self._view_layout
 
     def apply_feed(self, tick: int, feed: dict):
@@ -330,6 +372,8 @@ def _layout_views(views: list[dict], cols: int = 4) -> list[dict]:
             "viz": vtype,
             "tile_row": row,
             "tile_col": col,
+            "tile_rows": v.get("tile_rows", 1),
+            "tile_cols": v.get("tile_cols", 1),
         })
     return out
 
@@ -343,8 +387,13 @@ _VIZ_TYPES = {
 }
 
 
-def _auto_views(modules: list[dict], cols: int = 4) -> list[dict]:
+def _auto_views(modules: list[dict], cols: int = 4, rows: int = 4) -> list[dict]:
     out = []
+    video_mods = []   # viz_video / viz_fasth3_video — span 4x4
+    wxyz3d_mods = []  # viz_wxyz3d — span 4x4
+    xy_mods = []       # viz_xy — span 4x4
+    series_mods = []   # viz_series — compact one-tile each
+
     for m in modules:
         prim = m.get("primitive", "")
         vtype = _VIZ_TYPES.get(prim)
@@ -352,30 +401,51 @@ def _auto_views(modules: list[dict], cols: int = 4) -> list[dict]:
             continue
         mid = m.get("id", "")
         if vtype == "series":
-            out.append({
-                "id": mid, "module": mid, "output": "cv",
-                "key": (mid + ".cv").lower(),
-                "as": vtype, "viz": vtype,
-            })
+            series_mods.append({"id": mid, "module": mid, "output": "cv",
+                                "key": (mid + ".cv").lower(), "as": vtype, "viz": vtype,
+                                "tile_rows": 1, "tile_cols": 1})
         elif vtype == "xy":
-            out.append({
-                "id": mid, "module": mid, "output": "y",
-                "key": (mid + ".y").lower(),
-                "as": vtype, "viz": vtype,
-            })
+            xy_mods.append({"id": mid, "module": mid, "output": "y",
+                            "key": (mid + ".y").lower(), "as": vtype, "viz": vtype,
+                            "tile_rows": rows, "tile_cols": cols})
         elif vtype == "wxyz3d":
-            out.append({
-                "id": mid, "module": mid, "output": "z",
-                "key": (mid + ".z").lower(),
-                "as": vtype, "viz": vtype,
-            })
+            wxyz3d_mods.append({"id": mid, "module": mid, "output": "z",
+                               "key": (mid + ".z").lower(), "as": vtype, "viz": vtype,
+                               "tile_rows": rows, "tile_cols": cols})
         elif vtype == "video":
-            out.append({
-                "id": mid, "module": mid, "output": "ready",
-                "key": (mid + ".frame").lower(),
-                "as": vtype, "viz": vtype,
-            })
-    for i, v in enumerate(out):
-        v["tile_row"] = i // cols
-        v["tile_col"] = i % cols
+            video_mods.append({"id": mid, "module": mid, "output": "ready",
+                              "key": (mid + ".frame").lower(), "as": vtype, "viz": vtype,
+                              "tile_rows": rows, "tile_cols": cols})
+
+    # Layout order: video → wxyz3d → xy → series
+    # Spanning views default to (0,0) — they cover the whole matrix.
+    for v in video_mods + wxyz3d_mods + xy_mods:
+        v.setdefault("tile_row", 0)
+        v.setdefault("tile_col", 0)
+    out.extend(video_mods)
+    out.extend(wxyz3d_mods)
+    out.extend(xy_mods)
+
+    # Series: pack compactly in remaining free slots (row-major)
+    cursor = 0
+    for v in series_mods:
+        while _view_slot_taken(out, cursor // cols, cursor % cols):
+            cursor += 1
+        v["tile_row"] = cursor // cols
+        v["tile_col"] = cursor % cols
+        out.append(v)
+        cursor += 1
+
     return out
+
+
+def _view_slot_taken(views: list[dict], row: int, col: int) -> bool:
+    """True if any existing view occupies the (row, col) slot (including span)."""
+    for v in views:
+        r0 = v.get("tile_row", 0)
+        c0 = v.get("tile_col", 0)
+        rs = v.get("tile_rows", 1)
+        cs = v.get("tile_cols", 1)
+        if r0 <= row < r0 + rs and c0 <= col < c0 + cs:
+            return True
+    return False

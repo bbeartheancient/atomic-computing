@@ -29,8 +29,11 @@ node oracle in BOTH modes (MODE 1 batch, MODE 2 live/resident with
 per-tick feed hooks), and — since iter 8 — the QBF portable trace
 store (goal 6; the operator's "middle" format: working blobs, no
 50 MB cap, H(4) gates optional). "Done" = the spec stays coherent
-AND the harness stays green (185 tests, 22 sections, `ATOMIC-PC-STATE.md` tracks
-per-iteration state; iter 25 verified 24/24 + 196 passed + 359 fabric + hoa selftest + naga WGSL validation).
+AND the harness stays green (638 tests, 37 sections, `ATOMIC-PC-STATE.md` tracks
+per-iteration state; iter 45 fixed UI responsiveness (play/pause/step/reset +
+canvas throttle + feed wiring); iter 44 wired the ComfyUI FastH3 GGUF end-to-end via the
+full KSamplerAdvanced + SolAttnXPU VSA path with no stub fallback; verified
+against live ComfyUI vsa on port 8189).
 Still: git remote `github.com/bbeartheancient/atomic-computing` is live on `main` (first push e9cf4f1, 43 files); vendored `fabric/` (2.0 MB, jsfx + microfx + fixture) and `hoa64/` (8.8 MB, Hadamard spatial lib) are now in-repo so a fresh clone is standalone. Third-party siblings (`Rack`, `WebPd`, `circuitjs1`, `memvid`) remain external and are not vendored.
 
 PRIME DIRECTIVE: IF A BETTER WAY WOULD WORK, SUGGEST IT!
@@ -40,9 +43,9 @@ IMPORTANT: When making edits, make the edits first. If additional questions pers
             -- iteration budgets are capped at 128k; you must make your edits and end turn for next iteration at 128k token usage.
 
 Verify the harness (unified, vendored `fabric/` + `hoa64/`):
-- ATOMIC-PC harness (425 tests): `python -m pytest tests -q`
+- ATOMIC-PC harness (~625 tests): `python -m pytest tests -q`
   (oracle MODE 1+2 spawn `node`; vendored `fabric/web/jsfx.js` + `hoa64` — no external sibling required).
-- ATOMIC-PC gauntlet (34 sections, ~210 checks, ~5s): `python -m atomic.selftest`
+- ATOMIC-PC gauntlet (38 sections, ~229 checks, ~5s): `python -m atomic.selftest`
 - Live demos (eight end-to-end scripts under `examples/`):
   - `python -m examples.qbf_persistence_round_trip` — record+archive+load+replay a trace via `.qbf` shard
   - `python -m examples.hadamard_wxyz_scope`        — h4_slide keystone + 4x4 Display + viz_series
@@ -53,10 +56,10 @@ Verify the harness (unified, vendored `fabric/` + `hoa64/`):
   - `python -m examples.swarm_video_h3_consensus`    — iter 33: 4-agent Swarm H4 W-channel consensus -> H3 prompt routing
   - `python -m examples.qbf_video_frame_trace`       — iter 33: H3 frames -> FlowTrace -> QBF shard -> load_run -> flow_trace (bit-exact video round-trip)
   - `python -m examples.infinite_slop_loop`          — iter 41: Swarm H4 pick -> H3Stub -> FlowTrace -> fitness -> SlopEvolver (bank evolve) -> QBF archive
-- ATOMIC-PC UI tile wall (iter 17, port 18094, FastAPI + HTML5 canvas):
-  - boot: `uvicorn atomic.ui:app --port 18094 --host 0.0.0.0`
-  - browse: `http://localhost:18094/run/hadamard_wxyz` (any of 7 demo programs)
-    or `http://localhost:18094/run/bicameral_clock` (iter 25: sub/con engines via HostBridge)
+- ATOMIC-PC UI tile wall (iter 17, port 18093, FastAPI + HTML5 canvas):
+  - boot: `uvicorn atomic.ui:app --port 18093 --host 0.0.0.0`
+  - browse: `http://localhost:18093/run/hadamard_wxyz` (any of 7 demo programs)
+    or `http://localhost:18093/run/bicameral_clock` (iter 25: sub/con engines via HostBridge)
   - REST: `/api/programs` (includes `bicameral` key), `/api/control/<p>`, `/api/views/<p>`,
           `/api/snapshot/<p>`, `/api/tap/<p>`, `/api/feed/<p>`, `/api/batch/<p>`, `/api/stream/<p>`
   - REST (bicameral): `/api/bicameral`, `/api/bicameral/<p>/snapshot`, `/api/bicameral/<p>/batch`,
@@ -144,7 +147,7 @@ it (one .qbf shard per store: index + per-run manifest/ticks/one
 blob per node frame; append_run/load_run/flow_trace/replay_run/
 export_run; bit-identical replay; dir ~/.runtime/atomic_qbf,
 env ATOMIC_QBF_DIR); `ui/` (iter 17) = the FastAPI tile wall
-(`atomic.ui.server:app`, port 18094, lifespan auto-registers
+(`atomic.ui.server:app`, port 18093, lifespan auto-registers
 7 demo programs) + `viewer.py` (ProgramViewer: batch + per-tick
 `tick_once` + WebSocket queue broadcast + live tap/param feed
 apply, all snapshotted into `{t, running, bus, series, views}`),
@@ -164,7 +167,7 @@ The engine takes an optional `trace=` observer: pure read-only
   "atomizing data processes into keyword gates") is live on `main` (first push e9cf4f1); vendored `fabric/` and `hoa64/` make a fresh clone standalone.
 - Sibling trees: vendored `fabric/` (2.0 MB) and `hoa64/` (8.8 MB) are in-repo; third-party siblings (`Rack`, `WebPd`, `circuitjs1`, `memvid`) remain external and are not vendored.
 - Interpreters: `python` 3.11+ (`torch` + `transformers` for local harness; `node` v26 for JSFX oracle; `numpy` for `hoa64`).
-- Ports (optional local services): `fabric` :18093, `hoa64` :8765/:8770, `atomic.ui` :18094. Node v26 for JSFX.
+- Ports (optional local services): `fabric` :18093, `hoa64` :8765/:8770, `atomic.ui` :18093. Node v26 for JSFX.
 
 ## Decision frames
 - Import sibling trees; vendored `fabric/` and `hoa64/` are the exception for standalone (others never vendored).
@@ -245,3 +248,18 @@ Notes for the implementation turn (do NOT pre-build; the task is queued):
 - Jellyfin + HDHomeRun is an OS-level concern (jellyfin package,
   hdhr-stream.c, M3U at `/etc/jellyfin/livetv/*.m3u`); the harness
   documents the topology, does not vendor the stack.
+- **Iter 43 status**: ComfyUI vsa server (PID 1603825) at
+  `http://127.0.0.1:8188` runs with GGUF loaders. The
+  `H3TE38ReferenceToVideo` -> `VAEDecode` -> `SaveImage` path
+  returns real PNG frames in 0.5s (the safe TE38 preview path).
+  The full `KSamplerAdvanced` + `H3SmallTextEncoder` GGUF path
+  hits a rope/frequency shape bug in the XPU vsa branch's
+  `sol_attn_xpu/rope_fallback.py` — this is a ComfyUI upstream
+  issue, not the harness.
+- **verify_gguf(path)** in `atomic/fasth3_server.py` catches
+  truncated/re-quantized GGUF files: size pin (Q4=19 GB,
+  Q5=23 GB) + lazy first-1-MiB sha256. Call after model install.
+- For the TE38 vLLM path: the `/v1/hidden_states` endpoint returns
+  NaN for short prompts (server-side issue); use pre-encoded .pt
+  files from `te-h3/cond_out/` as test fixtures until the vLLM
+  adapter is fixed.
